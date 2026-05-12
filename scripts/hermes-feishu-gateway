@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${HERMES_FEISHU_ENV:-$ROOT_DIR/.env}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-$HOME/hermes-agent}"
+HERMES_PYTHON="${HERMES_PYTHON:-$HERMES_AGENT_DIR/venv/bin/python}"
+HERMES_CLI="${HERMES_CLI:-$HERMES_AGENT_DIR/hermes}"
+export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+export FEISHU_DOMAIN="${FEISHU_DOMAIN:-feishu}"
+export FEISHU_CONNECTION_MODE="${FEISHU_CONNECTION_MODE:-websocket}"
+export FEISHU_ALLOW_ALL_USERS="${FEISHU_ALLOW_ALL_USERS:-false}"
+export FEISHU_REQUIRE_MENTION="${FEISHU_REQUIRE_MENTION:-true}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./scripts/hermes-feishu-gateway check
+  ./scripts/hermes-feishu-gateway setup
+  ./scripts/hermes-feishu-gateway run
+  ./scripts/hermes-feishu-gateway status
+  ./scripts/hermes-feishu-gateway install
+  ./scripts/hermes-feishu-gateway start
+  ./scripts/hermes-feishu-gateway stop
+  ./scripts/hermes-feishu-gateway restart
+
+Configuration is loaded from .env by default.
+Set HERMES_FEISHU_ENV=/path/to/env to use another file.
+USAGE
+}
+
+require_file() {
+  local path="$1"
+  local label="$2"
+  if [[ ! -e "$path" ]]; then
+    echo "Missing $label: $path" >&2
+    exit 1
+  fi
+}
+
+check_python_deps() {
+  "$HERMES_PYTHON" - <<'PY'
+import importlib
+import sys
+
+missing = []
+for name in ("dotenv", "lark_oapi", "websockets", "aiohttp", "qrcode"):
+    try:
+        importlib.import_module(name)
+    except Exception as exc:
+        missing.append(f"{name} ({exc})")
+
+if missing:
+    print("Missing Python dependencies:")
+    for item in missing:
+        print(f"  - {item}")
+    sys.exit(1)
+
+print("Python dependencies: ok")
+PY
+}
+
+check_required_env() {
+  local failed=0
+
+  if [[ -z "${FEISHU_APP_ID:-}" ]]; then
+    echo "Missing FEISHU_APP_ID in $ENV_FILE" >&2
+    failed=1
+  fi
+  if [[ -z "${FEISHU_APP_SECRET:-}" ]]; then
+    echo "Missing FEISHU_APP_SECRET in $ENV_FILE" >&2
+    failed=1
+  fi
+
+  if [[ "$failed" -ne 0 ]]; then
+    echo "Copy .env.example to .env and fill the Feishu credentials." >&2
+    exit 1
+  fi
+}
+
+check_all() {
+  require_file "$HERMES_AGENT_DIR" "Hermes checkout"
+  require_file "$HERMES_PYTHON" "Hermes Python"
+  require_file "$HERMES_CLI" "Hermes CLI"
+
+  "$HERMES_PYTHON" - <<'PY'
+import sys
+if sys.version_info < (3, 11):
+    raise SystemExit(f"Python 3.11+ required, got {sys.version.split()[0]}")
+print(f"Python: {sys.version.split()[0]}")
+PY
+
+  check_python_deps
+
+  echo "Hermes checkout: $HERMES_AGENT_DIR"
+  echo "Hermes home: $HERMES_HOME"
+  echo "Feishu domain: $FEISHU_DOMAIN"
+  echo "Feishu connection mode: $FEISHU_CONNECTION_MODE"
+
+  if [[ -n "${FEISHU_APP_ID:-}" && -n "${FEISHU_APP_SECRET:-}" ]]; then
+    echo "Feishu credentials: present"
+  else
+    echo "Feishu credentials: missing"
+  fi
+}
+
+cmd="${1:-run}"
+case "$cmd" in
+  check)
+    check_all
+    ;;
+  setup)
+    check_all
+    exec "$HERMES_PYTHON" "$HERMES_CLI" gateway setup
+    ;;
+  run)
+    check_all
+    check_required_env
+    exec "$HERMES_PYTHON" "$HERMES_CLI" gateway run
+    ;;
+  status|install|start|stop|restart)
+    exec "$HERMES_PYTHON" "$HERMES_CLI" gateway "$cmd"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

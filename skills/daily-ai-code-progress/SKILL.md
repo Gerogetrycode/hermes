@@ -21,9 +21,10 @@ Use this skill to produce a short daily digest of AI coding and coding-agent pro
    ```
 
 2. Select about 5 items. Prefer:
-   - Official OpenAI items about Codex, agents, developer tools, API/platform changes, security, evals, or model capability changes relevant to coding.
-   - Official Anthropic/Claude items, especially Claude Code, Claude API, MCP, agent, IDE, or developer workflow updates.
-   - Official GitHub Copilot, VS Code, and other primary-source developer-tool updates when OpenAI/Claude have fewer strong items.
+   - Deep official or practitioner content about AI coding, coding agents, engineering workflows, security, evals, or production adoption.
+   - Official OpenAI and Anthropic/Claude items when they explain Codex, Claude Code, agent workflows, governance, safety, or developer platform changes with practical impact.
+   - High-signal practitioner analysis, especially when it turns product changes into engineering judgment or reusable workflow patterns.
+   - Product changelogs only when they materially change coding-agent behavior, migration plans, permissions, security, or team workflows; avoid filling the digest with minor GitHub/VS Code/Cursor changelog items.
 
 3. Avoid repeats. The collector excludes items already marked in its state file. After finalizing a digest, mark the sent items:
 
@@ -42,7 +43,10 @@ Use this skill to produce a short daily digest of AI coding and coding-agent pro
 ## Quality Rules
 
 - Do not include an item only because it is AI-adjacent; it must matter to coding, software delivery, developer tools, agent workflows, model APIs used by developers, or code/security workflows.
-- Prefer primary sources. Use secondary media only if it points to a primary source and the primary source is unavailable.
+- Prefer sources with interpretation or reusable practice over low-context release notes. Primary sources are valuable, but official does not automatically mean worth reading.
+- Limit product changelog entries to at most one item unless there is a genuinely major coding-agent change.
+- Limit vendor customer stories to at most one item unless they contain concrete implementation detail that can transfer to other engineering teams.
+- Do not duplicate the broad AI-industry roundup at `faiyi.com`; this skill should be narrower and stronger on AI coding, agentic engineering, developer workflow, and production adoption.
 - Do not invent dates, claims, metrics, availability, or product behavior. If a source is ambiguous, say so briefly or skip it.
 - Keep old but newly discovered items only when they are still useful and were not previously sent.
 - If the collector returns weak candidates, browse official OpenAI and Claude/Anthropic pages manually before falling back to broader sources.

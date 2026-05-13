@@ -1,8 +1,6 @@
 # Hermes Feishu Local Bridge
 
-This worktree is a thin local wrapper around the existing Hermes checkout at:
-
-`/Users/bytedance/Documents/hermes/hermes-agent`
+This worktree is a thin local wrapper around an existing Hermes checkout.
 
 Hermes already includes a Feishu / Lark gateway adapter. The files here make that setup repeatable without committing local secrets.
 
@@ -11,7 +9,7 @@ Hermes already includes a Feishu / Lark gateway adapter. The files here make tha
 1. Create a Feishu app at [open.feishu.cn](https://open.feishu.cn/).
 2. Enable the app's Bot capability.
 3. In the app's event subscription settings, choose WebSocket / long connection if available.
-4. Copy `.env.example` to `.env` and fill `FEISHU_APP_ID` and `FEISHU_APP_SECRET`.
+4. Copy `.env.example` to `.env`, set `HERMES_AGENT_DIR` to your local Hermes checkout, and fill `FEISHU_APP_ID` and `FEISHU_APP_SECRET`.
 5. Start the local gateway:
 
 ```bash
@@ -61,10 +59,8 @@ FEISHU_ALLOW_ALL_USERS=false
 FEISHU_ALLOWED_USERS=
 ```
 
-Unknown users can request pairing. Approve them from a local terminal with:
+Unknown users can request pairing. Approve them from a local terminal with your Hermes CLI:
 
 ```bash
-/Users/bytedance/Documents/hermes/hermes-agent/venv/bin/python \
-  /Users/bytedance/Documents/hermes/hermes-agent/hermes \
-  pairing approve feishu <code>
+hermes pairing approve feishu <code>
 ```

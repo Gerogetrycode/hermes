@@ -11,7 +11,7 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-/Users/bytedance/Documents/hermes/hermes-agent}"
+HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-$HOME/hermes-agent}"
 HERMES_PYTHON="${HERMES_PYTHON:-$HERMES_AGENT_DIR/venv/bin/python}"
 HERMES_CLI="${HERMES_CLI:-$HERMES_AGENT_DIR/hermes}"
 export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"

@@ -73,7 +73,7 @@ Recommended cron job:
 ```bash
 hermes cron create '0 11 * * *' \
   --name 'Daily AI Code Progress' \
-  --deliver local \
+  --deliver feishu:oc_adfe3ff6a5862a75e694c8def63af1fd \
   --skill daily-ai-code-progress \
   --script daily_ai_code_progress.py \
   --no-agent \

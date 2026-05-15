@@ -88,6 +88,25 @@ STRONG_RELEVANCE = [
     "software development",
 ]
 
+CORE_CODING_SIGNALS = [
+    "agentic engineering",
+    "agentic software",
+    "ai coding",
+    "claude code",
+    "code review",
+    "codex",
+    "coding agent",
+    "coding agents",
+    "developer tool",
+    "developer tools",
+    "mcp",
+    "pull request",
+    "repo",
+    "repository",
+    "sandbox",
+    "software development",
+]
+
 HIGH_SIGNAL_PATTERNS = [
     "architecture",
     "benchmark",
@@ -127,7 +146,6 @@ PRODUCT_CHANGELOG_SOURCES = {
     "GitHub Changelog",
     "VS Code Updates",
     "Cursor Changelog",
-    "Claude Code Changelog",
 }
 
 DEEP_CONTEXT_SOURCES = {
@@ -432,6 +450,7 @@ def score_item(item: Item, source_priority: int) -> tuple[int, str]:
     matched_title = [kw for kw in KEYWORDS if kw in item.title.lower()]
     matched_body = [kw for kw in KEYWORDS if kw in haystack and kw not in matched_title]
     matched_strong = [kw for kw in STRONG_RELEVANCE if kw in haystack]
+    matched_core = [kw for kw in CORE_CODING_SIGNALS if kw in haystack]
     matched_high_signal = [kw for kw in HIGH_SIGNAL_PATTERNS if kw in haystack]
     matched_low_signal = [kw for kw in LOW_SIGNAL_PATTERNS if kw in haystack]
     score = source_priority
@@ -466,9 +485,13 @@ def score_item(item: Item, source_priority: int) -> tuple[int, str]:
         score -= 45
     if item.source == "GitHub Changelog" and matched_low_signal and not matched_high_signal:
         score -= 80
+    if not matched_core:
+        score -= 140
     reason_bits = []
     if matched_strong:
         reason_bits.append("strong: " + ", ".join(matched_strong[:4]))
+    if matched_core:
+        reason_bits.append("core: " + ", ".join(matched_core[:4]))
     if matched_high_signal:
         reason_bits.append("high-signal: " + ", ".join(matched_high_signal[:4]))
     if matched_low_signal:
@@ -594,6 +617,18 @@ def chinese_digest(item: Item) -> str:
             "同时保留可审计轨迹。它的价值在于把“AI 会写代码”推进到“企业如何放心让 AI 跑命令、读仓库、改代码”的落地问题。"
             "对平台和安全团队来说，这比单个功能发布更重要，因为它给出了权限、观测和人工介入的治理框架。"
         )
+    if "sandbox" in title_lower and "windows" in title_lower and "codex" in title_lower:
+        return (
+            "OpenAI 解释了 Codex 在 Windows 上如何构建安全沙箱：限制文件访问和网络能力，让 coding agent 能执行真实开发任务，同时把破坏面控制在可审计边界内。"
+            "这条内容的实践意义很强，因为企业环境大量依赖 Windows 开发机和混合工具链。团队评估本地或远程编码代理时，应重点看沙箱隔离、权限申请、"
+            "网络默认策略和失败恢复，而不是只看模型能否写出代码。"
+        )
+    if "sea's view" in title_lower:
+        return (
+            "Sea Limited 的 CPO 讨论为什么要在工程团队中部署 Codex，加速 AI-native software development。"
+            "这类观点的价值在于它把 AI coding 放进组织能力建设：不是单个工程师更快写代码，而是研发流程、review、知识传递和跨区域工程团队如何重新分工。"
+            "可借鉴之处是先定义哪些任务适合代理承接，再围绕验收、权限和协作节奏设计落地方式。"
+        )
     if "nvidia" in title_lower and "codex" in title_lower:
         return (
             "OpenAI 介绍 NVIDIA 团队如何把 Codex 用在生产系统和研究实验中：一端面向工程交付，另一端把研究想法更快转成可运行原型。"
@@ -618,6 +653,12 @@ def chinese_digest(item: Item) -> str:
             "这条提醒对工程实践很关键，因为代码量增加会放大测试、理解、重构和排障成本。评估 AI coding 工具时，不能只看生成速度，"
             "还要看它是否让代码更容易维护，例如更清晰的设计、更好的测试、更少的隐式复杂度和更低的交接成本。"
         )
+    if "codex rises" in title_lower and "claude meters" in title_lower:
+        return (
+            "Latent Space 这期 AINews 把 Codex 扩张和 Claude programmatic usage 计量放在一起看，重点不只是产品更新，而是 AI coding 工具正在进入更明确的成本、"
+            "权限和使用治理阶段。对团队有用的判断是：当 coding agent 从个人试用变成持续调用的工程基础设施，模型能力、额度策略、审计和成本归因会一起影响采用效果。"
+            "这类内容适合用来跟踪生态趋势和团队预算/治理设计。"
+        )
     if "learning on the shop floor" in title_lower:
         return (
             "这篇记录 Shopify 内部 coding agent River 的组织实践：River 不在私聊里工作，而是在公开 Slack 频道中协作，让上下文、讨论、review "
@@ -632,10 +673,16 @@ def chinese_digest(item: Item) -> str:
         )
     if item.source in {"Simon Willison", "The Pragmatic Engineer", "Latent Space"}:
         return (
-            f"这篇来自 {item.source} 的文章更接近实践观察而不是产品公告。它的阅读价值在于帮助判断 AI coding 的真实落地边界，"
-            "例如团队该如何设计开发流程、评估自动化收益、避免把模型能力误当成工程能力。相比零散 changelog，这类内容更适合沉淀成团队方法论或工具选型判断。"
+            f"这篇来自 {item.source} 的文章应按实践价值来读：它帮助判断 AI coding 的真实落地边界，"
+            "例如团队如何设计开发流程、评估自动化收益、控制维护成本、处理权限与可靠性问题。摘要应优先提炼可迁移的工程判断，而不是停留在事件本身。"
         )
     if item.source == "Claude Code Changelog":
+        if "2.1.142" in item.title:
+            return (
+                "Claude Code 2.1.142 强化了后台 agent 会话的可配置性，`claude agents` 新增目录、settings、MCP config、plugin、permission mode、model "
+                "和 effort 等参数，说明 Claude Code 正在把一次性命令推进到可批量派发、可配置、可治理的后台任务系统。"
+                "这类 changelog 值得保留，因为它直接影响团队如何把编码代理接入真实仓库、权限策略和多会话工作流。"
+            )
         if "2.1.140" in item.title:
             return (
                 "Claude Code 2.1.140 主要是稳定性和可用性修复：Agent tool 的 `subagent_type` 匹配更宽松，`/goal` 在 hook 受限时不再静默挂起，"
@@ -692,6 +739,10 @@ def is_low_signal_changelog(item: Item) -> bool:
     return item.source in PRODUCT_CHANGELOG_SOURCES and any(pattern in haystack for pattern in LOW_SIGNAL_PATTERNS)
 
 
+def is_product_changelog(item: Item) -> bool:
+    return item.source in PRODUCT_CHANGELOG_SOURCES
+
+
 def is_vendor_case_study(item: Item) -> bool:
     haystack = f"{item.title}\n{item.url}\n{item.summary}".lower()
     return item.source == "OpenAI News" and any(
@@ -714,7 +765,6 @@ def select_items(candidates: list[Item], limit: int) -> list[Item]:
     source_counts: dict[str, int] = {}
     changelog_count = 0
     vendor_case_count = 0
-    enough_non_changelog = sum(1 for item in candidates if item.source not in PRODUCT_CHANGELOG_SOURCES) >= limit
     for item in sorted(candidates, key=lambda item: (item.score, freshness_bucket(item), item.published), reverse=True):
         if len(selected) >= limit:
             break
@@ -724,16 +774,14 @@ def select_items(candidates: list[Item], limit: int) -> list[Item]:
             if vendor_case_count >= 1:
                 continue
             vendor_case_count += 1
-        if item.source in PRODUCT_CHANGELOG_SOURCES:
-            if enough_non_changelog:
-                continue
+        if is_product_changelog(item):
             if changelog_count >= 1:
                 continue
             if is_low_signal_changelog(item) and len(candidates) > limit:
                 continue
         selected.append(item)
         source_counts[item.source] = source_counts.get(item.source, 0) + 1
-        if item.source in PRODUCT_CHANGELOG_SOURCES:
+        if is_product_changelog(item):
             changelog_count += 1
     if len(selected) < limit:
         selected_fingerprints = {item.fingerprint for item in selected}
@@ -743,7 +791,7 @@ def select_items(candidates: list[Item], limit: int) -> list[Item]:
                 break
             if has_vendor_case and is_vendor_case_study(item):
                 continue
-            if item.source not in PRODUCT_CHANGELOG_SOURCES and item.fingerprint not in selected_fingerprints:
+            if not is_product_changelog(item) and item.fingerprint not in selected_fingerprints:
                 selected.append(item)
                 selected_fingerprints.add(item.fingerprint)
                 if is_vendor_case_study(item):

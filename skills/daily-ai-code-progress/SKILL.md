@@ -1,6 +1,6 @@
 ---
 name: daily-ai-code-progress
-description: Produce a concise daily digest of AI coding industry progress, selecting about five non-duplicate items from authoritative sources, with priority for official OpenAI and Anthropic/Claude announcements, Claude Code changes, and other official developer-tool channels.
+description: Produce a concise daily AI builders and AI coding digest using follow-builders central feeds, then send it as a Feishu card alongside a separate faiyi.com daily AI brief card.
 license: MIT
 metadata:
   hermes:
@@ -10,54 +10,61 @@ metadata:
 
 # Daily AI Code Progress
 
-Use this skill to produce a short daily digest of AI coding and coding-agent progress.
+Use this skill to produce a short daily digest of AI builders, AI coding, and coding-agent progress.
 
 ## Workflow
 
-1. Run the bundled collector from the repository root:
+1. Run the bundled follow-builders based collector from the repository root:
 
    ```bash
-   python3 skills/daily-ai-code-progress/scripts/collect_news.py --limit 8
+   python3 skills/daily-ai-code-progress/scripts/follow_builders_digest.py --include-seen
    ```
 
-2. Select about 5 items. Prefer:
-   - Deep official or practitioner content about AI coding, coding agents, engineering workflows, security, evals, or production adoption.
-   - Official OpenAI and Anthropic/Claude items when they explain Codex, Claude Code, agent workflows, governance, safety, or developer platform changes with practical impact.
-   - High-signal practitioner analysis, especially when it turns product changes into engineering judgment or reusable workflow patterns.
-   - Product changelogs when they materially change coding-agent behavior, migration plans, permissions, security, or team workflows; avoid filling the digest with minor GitHub/VS Code/Cursor changelog items.
+2. The collector uses the public central feeds from [`zarazhangrui/follow-builders`](https://github.com/zarazhangrui/follow-builders), pinned in code with the source commit used during integration. The source data is:
+   - `feed-x.json`: AI builders' recent X posts.
+   - `feed-podcasts.json`: podcast episode metadata and transcript excerpts.
+   - `feed-blogs.json`: official/company blog posts and summaries.
+   - The follow-builders prompt rules for skipping low-signal content and remixing summaries.
 
-3. Avoid repeats. The collector excludes items already marked in its state file. After finalizing a digest, mark the sent items:
+3. By default the script prepares candidates locally, then invokes local Hermes in non-interactive mode to remix the final builders card. This is intentional: source collection, state, and Feishu delivery are deterministic, while final selection and Chinese summaries use agent reasoning. Use `--no-agent-remix` only as a fallback when the local Hermes model is unavailable.
+
+4. Prefer:
+   - Original builder posts from X when they contain product, technical, or market insight.
+   - Podcast episodes with concrete discussion of MCP, APIs, coding agents, developer tools, model economics, or security.
+   - Official/blog content when it has practical engineering implications.
+
+5. Avoid repeats. The collector excludes items already marked in its state file. After finalizing a digest, mark the sent items and send Feishu cards:
 
    ```bash
-   python3 skills/daily-ai-code-progress/scripts/collect_news.py --limit 5 --mark-sent
+   python3 skills/daily-ai-code-progress/scripts/follow_builders_digest.py --mark-sent --send-feishu
    ```
 
-4. Write the digest in Chinese unless the user asks otherwise. Keep it compact but informative:
-   - Title: `AI Code 日报 - YYYY-MM-DD`
+6. Write the builders digest in Chinese unless the user asks otherwise. Keep it compact but informative:
+   - Title: `AI Builders Digest - YYYY-MM-DD`
    - 5 bullets max unless there is a clearly exceptional day.
    - Use clickable Markdown titles: `[title](url)`.
    - Each item should include source, date, and a Chinese summary of roughly 150-250 Chinese characters.
-   - Mention when there are no same-day strong official updates and the digest is using recent high-quality items instead.
-   - Mention "今天没有足够新的权威信息" if fewer than 3 strong items remain after dedupe.
+   - Prefer builder-level insight over generic product announcements.
+   - Do not reuse fixed boilerplate sentences across items.
+
+7. Keep the faiyi.com daily AI brief separate. The runner fetches the latest post from `http://www.faiyi.com/?cat=7` through the WordPress REST API and sends it as a second Feishu card. Do not merge the two briefs into one message.
 
 ## Quality Rules
 
 - Do not include an item only because it is AI-adjacent; it must matter to coding, software delivery, developer tools, agent workflows, model APIs used by developers, or code/security workflows.
-- Prefer sources with interpretation or reusable practice over low-context release notes. Primary sources are valuable, but official does not automatically mean worth reading.
-- Treat "changelog" as a format, not a quality judgment: skip low-context release-note filler, but keep changelog items that reveal meaningful behavior changes, operational constraints, migrations, security posture, or agent workflow implications.
-- Limit low-context product changelog entries to at most one item unless there is a genuinely major coding-agent change.
-- Limit vendor customer stories to at most one item unless they contain concrete implementation detail that can transfer to other engineering teams.
-- Do not duplicate the broad AI-industry roundup at `faiyi.com`; this skill should be narrower and stronger on AI coding, agentic engineering, developer workflow, and production adoption.
+- Prefer original builder viewpoints and substantive podcast/blog discussions over low-context release notes.
+- Treat `follow-builders` as the source of collection breadth; local logic should focus on scoring, dedupe, Chinese summaries, and Feishu delivery.
+- Use agent remix for final selection because comparing builders' posts, podcast transcripts, and official blogs requires semantic judgment. Local keyword rules are only a reliability fallback.
+- Do not duplicate the broad AI-industry roundup at `faiyi.com`; this skill should be narrower and stronger on builders, AI coding, agentic engineering, developer workflow, and production adoption.
 - Do not invent dates, claims, metrics, availability, or product behavior. If a source is ambiguous, say so briefly or skip it.
 - Keep old but newly discovered items only when they are still useful and were not previously sent.
-- If the collector returns weak candidates, browse official OpenAI and Claude/Anthropic pages manually before falling back to broader sources.
 
 ## State
 
-By default the collector stores sent fingerprints in:
+By default the collector stores sent fingerprints and local rendered outputs under:
 
 ```text
-.cache/daily-ai-code-progress/seen.json
+~/.hermes/state/daily-ai-code-progress/
 ```
 
 Use `--state PATH` when a different durable state location is needed for an automation.
@@ -78,7 +85,7 @@ Recommended cron job:
 ```bash
 hermes cron create '0 11 * * *' \
   --name 'Daily AI Code Progress' \
-  --deliver feishu:oc_adfe3ff6a5862a75e694c8def63af1fd \
+  --deliver local \
   --skill daily-ai-code-progress \
   --script daily_ai_code_progress.py \
   --no-agent \
@@ -86,7 +93,7 @@ hermes cron create '0 11 * * *' \
   'Deliver the generated AI Code daily digest.'
 ```
 
-The runner marks selected AI Code items as sent by default so repeated cron runs do not resend the same links. It also fetches the latest post from `http://www.faiyi.com/?cat=7` through the WordPress REST API and appends that post's current content to the end of the digest. For a manual preview, run:
+The runner sends two Feishu interactive cards itself: one AI Builders card and one faiyi.com card. Keep Hermes cron delivery set to `local` so the cron system does not send a third combined text message. For a manual preview without sending cards or marking state, run:
 
 ```bash
 DAILY_AI_CODE_PREVIEW=1 python3 ~/.hermes/scripts/daily_ai_code_progress.py

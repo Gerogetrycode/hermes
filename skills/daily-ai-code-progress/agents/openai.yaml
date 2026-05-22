@@ -1,4 +1,4 @@
 interface:
-  display_name: "Daily AI Code Progress"
-  short_description: "Daily authoritative AI coding digest"
-  default_prompt: "Use $daily-ai-code-progress to produce today's concise AI coding industry digest."
+  display_name: "Daily AI Builders Digest"
+  short_description: "Daily AI builders digest plus separate faiyi.com AI brief cards"
+  default_prompt: "Use $daily-ai-code-progress to produce today's AI builders digest and separate faiyi.com AI brief cards."

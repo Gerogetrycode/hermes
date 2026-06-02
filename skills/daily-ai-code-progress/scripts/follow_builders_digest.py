@@ -33,6 +33,8 @@ DEFAULT_STATE = Path.home() / ".hermes/state/daily-ai-code-progress/seen.json"
 DEFAULT_OUTPUT_DIR = Path.home() / ".hermes/state/daily-ai-code-progress/outputs"
 USER_AGENT = "daily-ai-code-progress-follow-builders/0.2"
 DEFAULT_HERMES_CLI = "/Users/bytedance/Documents/hermes/hermes-agent/hermes"
+DEFAULT_DIGEST_LIMIT = 10
+MAX_DIGEST_LIMIT = 10
 
 try:
     import certifi  # type: ignore[import-not-found]
@@ -534,7 +536,7 @@ def build_remix_prompt(items: list[DigestItem], meta: dict, limit: int) -> str:
     return (
         "你是 AI builders digest 的编辑。下面是从 follow-builders central feed 取得的候选源数据，"
         "包括 X builders posts、podcast transcript excerpt、官方/公司 blog 摘要。\n\n"
-        "任务：从候选中精选最多 5 条，输出一张中文 Markdown 简报。\n\n"
+        f"任务：从候选中精选高质量内容，输出一张中文 Markdown 简报。常规目标是 5 条；如果当天确实有更多高质量内容，可以扩展到最多 {limit} 条。\n\n"
         "编辑标准：\n"
         "1. 优先选择对 AI coding、agent 工作流、MCP/API 工具层、IDE、sandbox、eval、repo/CI、模型 API 落地有实践意义的内容。\n"
         "2. 跳过泛创业鸡汤、寒暄、纯推广、只有热度但缺少工程含义的动态。\n"
@@ -551,7 +553,7 @@ def build_remix_prompt(items: list[DigestItem], meta: dict, limit: int) -> str:
         "- 来源：...\n"
         "- 日期：...\n"
         "- 摘要：...\n\n"
-        f"最多 {limit} 条。末尾加一行 `_Feed skill: {FOLLOW_BUILDERS_REPO} @ {FOLLOW_BUILDERS_COMMIT[:7]}_`。\n\n"
+        f"数量要求：不要硬凑条数；低质量日可以少于 5 条，高质量日可以多于 5 条，但最多 {limit} 条。末尾加一行 `_Feed skill: {FOLLOW_BUILDERS_REPO} @ {FOLLOW_BUILDERS_COMMIT[:7]}_`。\n\n"
         "候选源数据 JSON：\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
@@ -753,7 +755,7 @@ def save_local_output(markdown: str, output_dir: Path) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build AI builders and faiyi digests, optionally sending Feishu cards.")
-    parser.add_argument("--limit", type=int, default=int(os.environ.get("DAILY_AI_CODE_LIMIT", "5")))
+    parser.add_argument("--limit", type=int, default=int(os.environ.get("DAILY_AI_CODE_LIMIT", str(DEFAULT_DIGEST_LIMIT))))
     parser.add_argument("--state", type=Path, default=Path(os.environ.get("DAILY_AI_CODE_STATE", str(DEFAULT_STATE))))
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--mark-sent", action="store_true")
@@ -766,17 +768,18 @@ def main() -> int:
 
     load_dotenv(Path.home() / ".hermes/.env")
     include_seen = args.include_seen or os.environ.get("DAILY_AI_CODE_PREVIEW") == "1"
-    candidate_limit = max(args.limit * 3, 12)
+    digest_limit = min(max(args.limit, 1), MAX_DIGEST_LIMIT)
+    candidate_limit = max(digest_limit * 3, 12)
     items, meta = collect_builders_digest(candidate_limit, args.state, include_seen=include_seen)
     use_agent_remix = not args.no_agent_remix and os.environ.get("DAILY_AI_CODE_DISABLE_AGENT_REMIX") != "1"
     if use_agent_remix and items:
         try:
-            builders_markdown = remix_with_hermes_agent(items, meta, args.limit)
+            builders_markdown = remix_with_hermes_agent(items, meta, digest_limit)
         except Exception as exc:  # noqa: BLE001 - cron should still deliver a fallback digest.
             print(f"warning: {exc}; falling back to local rule-based digest", file=sys.stderr)
-            builders_markdown = render_builders_markdown(items[: args.limit], meta)
+            builders_markdown = render_builders_markdown(items[:digest_limit], meta)
     else:
-        builders_markdown = render_builders_markdown(items[: args.limit], meta)
+        builders_markdown = render_builders_markdown(items[:digest_limit], meta)
     faiyi_markdown = latest_faiyi_brief()
     full_output = f"{builders_markdown}\n\n---\n\n{faiyi_markdown}"
     output_path = save_local_output(full_output, args.output_dir)
@@ -803,7 +806,7 @@ def main() -> int:
         sent.append(send_feishu_card(chat_id, faiyi_card, thread_id=args.thread_id))
 
     if args.mark_sent:
-        mark_sent_from_markdown(builders_markdown, items, args.state, args.limit)
+        mark_sent_from_markdown(builders_markdown, items, args.state, digest_limit)
 
     print(full_output)
     if sent:

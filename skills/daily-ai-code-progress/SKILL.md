@@ -41,7 +41,7 @@ Use this skill to produce a short daily digest of AI builders, AI coding, and co
 
 6. Write the builders digest in Chinese unless the user asks otherwise. Keep it compact but informative:
    - Title: `AI Builders Digest - YYYY-MM-DD`
-   - 5 bullets max unless there is a clearly exceptional day.
+   - Aim for about 5 items on normal days; include more only when the sources are genuinely high quality, and keep the digest at 10 items or fewer.
    - Use clickable Markdown titles: `[title](url)`.
    - Each item should include source, date, and a Chinese summary of roughly 150-250 Chinese characters.
    - Prefer builder-level insight over generic product announcements.

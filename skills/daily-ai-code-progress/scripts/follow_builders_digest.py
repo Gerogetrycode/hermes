@@ -14,6 +14,7 @@ import re
 import ssl
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -31,6 +32,7 @@ FEED_BLOGS_URL = "https://raw.githubusercontent.com/zarazhangrui/follow-builders
 FAIYI_LATEST_API = "http://www.faiyi.com/index.php?rest_route=/wp/v2/posts&categories=7&per_page=1"
 DEFAULT_STATE = Path.home() / ".hermes/state/daily-ai-code-progress/seen.json"
 DEFAULT_OUTPUT_DIR = Path.home() / ".hermes/state/daily-ai-code-progress/outputs"
+DEFAULT_CACHE_DIR = Path.home() / ".hermes/state/daily-ai-code-progress/cache"
 USER_AGENT = "daily-ai-code-progress-follow-builders/0.2"
 DEFAULT_HERMES_CLI = "/Users/bytedance/Documents/hermes/hermes-agent/hermes"
 DEFAULT_DIGEST_LIMIT = 10
@@ -215,16 +217,82 @@ def build_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(*handlers)
 
 
+def retry_config() -> tuple[int, float]:
+    attempts = int(os.environ.get("DAILY_AI_CODE_FETCH_RETRIES", "4"))
+    base_sleep = float(os.environ.get("DAILY_AI_CODE_FETCH_RETRY_SLEEP", "5"))
+    return max(attempts, 1), max(base_sleep, 0.0)
+
+
+def open_with_retries(request: urllib.request.Request, timeout: int) -> bytes:
+    attempts, base_sleep = retry_config()
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with build_opener().open(request, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:  # noqa: BLE001 - network/DNS/TLS errors all use different exception types.
+            last_error = exc
+            if attempt >= attempts:
+                break
+            sleep_for = base_sleep * attempt
+            print(
+                f"warning: fetch attempt {attempt}/{attempts} failed for {request.full_url}: {exc}; retrying in {sleep_for:g}s",
+                file=sys.stderr,
+            )
+            time.sleep(sleep_for)
+    assert last_error is not None
+    raise last_error
+
+
 def fetch_text(url: str, timeout: int = 20) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with build_opener().open(request, timeout=timeout) as response:
-        data = response.read()
-        charset = response.headers.get_content_charset() or "utf-8"
-    return data.decode(charset, errors="replace")
+    attempts, base_sleep = retry_config()
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with build_opener().open(request, timeout=timeout) as response:
+                data = response.read()
+                charset = response.headers.get_content_charset() or "utf-8"
+            return data.decode(charset, errors="replace")
+        except Exception as exc:  # noqa: BLE001 - network/DNS/TLS errors all use different exception types.
+            last_error = exc
+            if attempt >= attempts:
+                break
+            sleep_for = base_sleep * attempt
+            print(
+                f"warning: fetch attempt {attempt}/{attempts} failed for {url}: {exc}; retrying in {sleep_for:g}s",
+                file=sys.stderr,
+            )
+            time.sleep(sleep_for)
+    assert last_error is not None
+    raise last_error
 
 
 def fetch_json(url: str, timeout: int = 20) -> object:
     return json.loads(fetch_text(url, timeout=timeout))
+
+
+def cached_feed_path(cache_dir: Path, name: str) -> Path:
+    return cache_dir / f"{name}.json"
+
+
+def fetch_feed_json(url: str, name: str, cache_dir: Path, timeout: int = 20) -> tuple[dict, str]:
+    cache_path = cached_feed_path(cache_dir, name)
+    try:
+        payload = fetch_json(url, timeout=timeout)
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"feed {name} returned non-object JSON")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return payload, "live"
+    except Exception as exc:  # noqa: BLE001 - fallback to the last good feed snapshot.
+        if cache_path.exists():
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict):
+                print(f"warning: using cached {name} feed after fetch failure: {exc}", file=sys.stderr)
+                return cached, "cache"
+        print(f"warning: {name} feed unavailable and no cache exists: {exc}", file=sys.stderr)
+        return {}, "unavailable"
 
 
 def clean_text(value: str) -> str:
@@ -423,14 +491,22 @@ def collect_blog_items(feed: dict) -> list[DigestItem]:
     return items
 
 
-def collect_builders_digest(limit: int, state_path: Path, include_seen: bool) -> tuple[list[DigestItem], dict]:
-    feed_x = fetch_json(os.environ.get("FOLLOW_BUILDERS_FEED_X_URL", FEED_X_URL))
-    feed_podcasts = fetch_json(os.environ.get("FOLLOW_BUILDERS_FEED_PODCASTS_URL", FEED_PODCASTS_URL))
-    feed_blogs = fetch_json(os.environ.get("FOLLOW_BUILDERS_FEED_BLOGS_URL", FEED_BLOGS_URL))
+def collect_builders_digest(limit: int, state_path: Path, include_seen: bool, cache_dir: Path) -> tuple[list[DigestItem], dict]:
+    feed_x, x_status = fetch_feed_json(os.environ.get("FOLLOW_BUILDERS_FEED_X_URL", FEED_X_URL), "feed-x", cache_dir)
+    feed_podcasts, podcasts_status = fetch_feed_json(
+        os.environ.get("FOLLOW_BUILDERS_FEED_PODCASTS_URL", FEED_PODCASTS_URL),
+        "feed-podcasts",
+        cache_dir,
+    )
+    feed_blogs, blogs_status = fetch_feed_json(
+        os.environ.get("FOLLOW_BUILDERS_FEED_BLOGS_URL", FEED_BLOGS_URL),
+        "feed-blogs",
+        cache_dir,
+    )
     feeds = {
-        "x": feed_x if isinstance(feed_x, dict) else {},
-        "podcasts": feed_podcasts if isinstance(feed_podcasts, dict) else {},
-        "blogs": feed_blogs if isinstance(feed_blogs, dict) else {},
+        "x": feed_x,
+        "podcasts": feed_podcasts,
+        "blogs": feed_blogs,
     }
     state = load_state(state_path)
     seen = state.setdefault("seen", {})
@@ -462,6 +538,11 @@ def collect_builders_digest(limit: int, state_path: Path, include_seen: bool) ->
         "xBuilders": len(feeds["x"].get("x", []) or []),
         "podcastEpisodes": len(feeds["podcasts"].get("podcasts", []) or []),
         "blogPosts": len(feeds["blogs"].get("blogs", []) or []),
+        "feedStatus": {
+            "x": x_status,
+            "podcasts": podcasts_status,
+            "blogs": blogs_status,
+        },
     }
     return selected[:limit], meta
 
@@ -714,8 +795,7 @@ def feishu_token() -> str:
     url = f"{feishu_base_url()}/open-apis/auth/v3/tenant_access_token/internal"
     data = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with build_opener().open(request, timeout=20) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    payload = json.loads(open_with_retries(request, timeout=20).decode("utf-8"))
     token = payload.get("tenant_access_token")
     if not token:
         raise RuntimeError(f"failed to get Feishu tenant token: {payload}")
@@ -738,8 +818,7 @@ def send_feishu_card(chat_id: str, card: dict, thread_id: str = "") -> str:
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
-    with build_opener().open(request, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    payload = json.loads(open_with_retries(request, timeout=30).decode("utf-8"))
     if payload.get("code") not in (0, None):
         raise RuntimeError(f"Feishu card send failed: {payload}")
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
@@ -758,6 +837,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=int(os.environ.get("DAILY_AI_CODE_LIMIT", str(DEFAULT_DIGEST_LIMIT))))
     parser.add_argument("--state", type=Path, default=Path(os.environ.get("DAILY_AI_CODE_STATE", str(DEFAULT_STATE))))
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--cache-dir", type=Path, default=Path(os.environ.get("DAILY_AI_CODE_CACHE_DIR", str(DEFAULT_CACHE_DIR))))
     parser.add_argument("--mark-sent", action="store_true")
     parser.add_argument("--send-feishu", action="store_true")
     parser.add_argument("--chat-id", default=os.environ.get("FEISHU_HOME_CHANNEL", ""))
@@ -770,7 +850,7 @@ def main() -> int:
     include_seen = args.include_seen or os.environ.get("DAILY_AI_CODE_PREVIEW") == "1"
     digest_limit = min(max(args.limit, 1), MAX_DIGEST_LIMIT)
     candidate_limit = max(digest_limit * 3, 12)
-    items, meta = collect_builders_digest(candidate_limit, args.state, include_seen=include_seen)
+    items, meta = collect_builders_digest(candidate_limit, args.state, include_seen=include_seen, cache_dir=args.cache_dir)
     use_agent_remix = not args.no_agent_remix and os.environ.get("DAILY_AI_CODE_DISABLE_AGENT_REMIX") != "1"
     if use_agent_remix and items:
         try:

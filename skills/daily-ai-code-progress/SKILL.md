@@ -80,10 +80,10 @@ mkdir -p ~/.hermes/scripts
 cp skills/daily-ai-code-progress/scripts/hermes_daily_ai_code_progress.py ~/.hermes/scripts/daily_ai_code_progress.py
 ```
 
-Recommended cron job:
+Recommended cron job. Use an 8:00-12:00 retry window rather than a single daily tick; the runner skips once a same-day output already exists, so this still sends at most once per day while recovering from morning DNS/network failures.
 
 ```bash
-hermes cron create '0 11 * * *' \
+hermes cron create '0 8-12 * * *' \
   --name 'Daily AI Code Progress' \
   --deliver local \
   --skill daily-ai-code-progress \
@@ -93,7 +93,7 @@ hermes cron create '0 11 * * *' \
   'Deliver the generated AI Code daily digest.'
 ```
 
-The runner sends two Feishu interactive cards itself: one AI Builders card and one faiyi.com card. Keep Hermes cron delivery set to `local` so the cron system does not send a third combined text message. For a manual preview without sending cards or marking state, run:
+The runner sends two Feishu interactive cards itself: one AI Builders card and one faiyi.com card. It also refuses to rerun for the same date unless `DAILY_AI_CODE_FORCE=1` is set. Keep Hermes cron delivery set to `local` so the cron system does not send a third combined text message. For a manual preview without sending cards or marking state, run:
 
 ```bash
 DAILY_AI_CODE_PREVIEW=1 python3 ~/.hermes/scripts/daily_ai_code_progress.py

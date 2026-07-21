@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-DEFAULT_REPO = Path("/Users/bytedance/.codex/worktrees/9364/hermes")
+DEFAULT_REPO = Path("/Users/bytedance/Documents/hermes/myskill")
 
 
 def main() -> int:

@@ -128,6 +128,19 @@ TOPIC_IMPLICATIONS = {
     "AI builders 动态": "实践含义是，这类 builders 原始信号可帮助判断开发者工具、模型 API 和工程自动化的早期方向，但仍要结合自身场景验证。",
 }
 
+FALLBACK_SIGNAL_RULES = [
+    ("AI 成本、使用量与总支出的关系", ["cost", "pricing", "spend", "budget", "capex", "token"]),
+    ("个人评测集、模型比较与选型方法", ["personal eval", "benchmark", "eval set", "model selection"]),
+    ("一次性软件和按需生成工具", ["disposable", "discarded after usage", "single-use"]),
+    ("agent 的购买、支付权限与止损控制", ["overspend", "buy things", "selling", "payment", "pay"]),
+    ("skills、system prompt 与 agent 配置", ["skills", "system prompt", "instructions.md"]),
+    ("Claude Code、Codex 与 coding agent 工作流", ["claude code", "codex", "coding agent"]),
+    ("MCP、API 与工具接口", ["mcp", "api", "sdk", "tool calling"]),
+    ("权限隔离、安全评测与沙箱", ["security", "cybersecurity", "sandbox", "permission"]),
+    ("真实仓库、测试、评审与交付流程", ["repository", "repo", "test", "review", "ci"]),
+    ("产品采用、组织协作与工程效率", ["workflow", "developer", "product", "company", "team"]),
+]
+
 
 @dataclass
 class DigestItem:
@@ -339,6 +352,63 @@ def classify_topic(text: str) -> str:
 
 def topic_implication(topic: str) -> str:
     return TOPIC_IMPLICATIONS.get(topic, TOPIC_IMPLICATIONS["AI builders 动态"])
+
+
+def fallback_focuses(item: DigestItem, limit: int = 3) -> list[str]:
+    text = f"{item.title}\n{item.summary}\n{item.raw_content}".lower()
+    focuses = [label for label, terms in FALLBACK_SIGNAL_RULES if any(term in text for term in terms)]
+    return focuses[:limit] or ["AI 工具在真实业务中的使用方式、适用边界与工程影响"]
+
+
+def fallback_chinese_summary(item: DigestItem) -> str:
+    """Render a Chinese-first summary without copying long source excerpts.
+
+    This path is used when the semantic remix model is unavailable. It stays
+    conservative: describe detected themes and reading implications, but do
+    not pretend to have translated or inferred claims that local rules cannot
+    verify.
+    """
+    topic = classify_topic(f"{item.title}\n{item.summary}\n{item.raw_content}")
+    focus = "、".join(fallback_focuses(item))
+    implication = topic_implication(topic)
+    if item.source.startswith("X / "):
+        author = item.source.removeprefix("X / ").strip() or "这位 builder"
+        return (
+            f"{author} 的这条动态聚焦「{topic}」，具体涉及{focus}。"
+            "这类一线观点适合用来观察开发者和产品团队正在关注哪些问题，但不能脱离原帖上下文直接当作结论；"
+            f"阅读时应继续核对作者给出的案例、前提和限制。{implication}"
+        )
+    if item.source.startswith("Podcast / "):
+        show = item.source.removeprefix("Podcast / ").strip() or "这期播客"
+        return (
+            f"这期 {show} 围绕「{topic}」展开，讨论重点包括{focus}。"
+            "收听时值得重点核对嘉宾提出的机制、风险和实际案例，并区分个人判断与已经验证的工程经验；"
+            f"这样才能把访谈观点转化为可执行的选型依据。{implication}"
+        )
+    return (
+        f"这篇来自 {item.source} 的内容围绕「{topic}」展开，重点涉及{focus}。"
+        "阅读时应优先核对原文中的具体机制、数据和适用范围，避免只凭标题或单段摘录做判断；"
+        f"对工程团队而言，更重要的是确认这些变化能否进入现有开发与治理流程。{implication}"
+    )
+
+
+def chinese_text_share(text: str) -> float:
+    chinese_chars = len(re.findall(r"[\u3400-\u9fff]", text))
+    latin_chars = len(re.findall(r"[A-Za-z]", text))
+    total = chinese_chars + latin_chars
+    return chinese_chars / total if total else 0.0
+
+
+def validate_chinese_digest(markdown: str) -> None:
+    summaries = re.findall(r"(?m)^-\s*摘要：\s*(.+)$", markdown)
+    if not summaries:
+        raise RuntimeError("Hermes remix returned no digest summaries")
+    for index, summary in enumerate(summaries, 1):
+        chinese_chars = len(re.findall(r"[\u3400-\u9fff]", summary))
+        if chinese_chars < 60 or chinese_text_share(summary) < 0.45:
+            raise RuntimeError(f"Hermes remix summary {index} is not Chinese-first")
+        if re.search(r"(?:\b[A-Za-z][A-Za-z'’-]*\b[\s,;:()'’-]*){20,}", summary):
+            raise RuntimeError(f"Hermes remix summary {index} contains a long English passage")
 
 
 def signal_score(text: str) -> int:
@@ -581,7 +651,7 @@ def render_builders_markdown(items: list[DigestItem], meta: dict) -> str:
                 "",
                 f"- 来源：{item.source}",
                 f"- 日期：{date_part}",
-                f"- 摘要：{item.summary}",
+                f"- 摘要：{fallback_chinese_summary(item)}",
                 "",
             ]
         )
@@ -623,6 +693,7 @@ def build_remix_prompt(items: list[DigestItem], meta: dict, limit: int) -> str:
         "2. 跳过泛创业鸡汤、寒暄、纯推广、只有热度但缺少工程含义的动态。\n"
         "3. 可以选择 podcast/blog/X 任意来源，但不要为了来源多样性牺牲质量。\n"
         "4. 每条摘要写 150-250 个中文字符，讲清楚：发生了什么、为什么值得看、对工程团队或工具选型有什么启发。\n"
+        "   摘要正文必须以中文为主。产品名、代码标识符可以保留英文，但不要复制完整英文句子；任何英文直接引语不得超过 20 个英文单词。\n"
         "5. 不要复用固定套话，尤其不要写“相比零散 changelog”这类反复句式。\n"
         "6. 只使用 JSON 中已有信息，不要编造数据、发布日期、产品能力或人物身份。\n"
         "7. 每条标题必须使用原始链接，格式为 `## 1. [标题](URL)`，并保留来源和日期。\n\n"
@@ -672,6 +743,8 @@ def card_display_markdown(markdown: str, *, strip_top_title: bool = True) -> str
 def remix_with_hermes_agent(items: list[DigestItem], meta: dict, limit: int) -> str:
     hermes_cli = os.environ.get("HERMES_CLI", DEFAULT_HERMES_CLI)
     hermes_python = os.environ.get("HERMES_PYTHON", sys.executable)
+    remix_provider = os.environ.get("DAILY_AI_CODE_REMIX_PROVIDER", "").strip()
+    remix_model = os.environ.get("DAILY_AI_CODE_REMIX_MODEL", "").strip()
     timeout = int(os.environ.get("DAILY_AI_CODE_REMIX_TIMEOUT", "240"))
     cmd = [
         hermes_python,
@@ -683,15 +756,19 @@ def remix_with_hermes_agent(items: list[DigestItem], meta: dict, limit: int) -> 
         "tool",
         "--max-turns",
         "3",
-        "-q",
-        build_remix_prompt(items, meta, limit),
     ]
+    if remix_provider:
+        cmd.extend(["--provider", remix_provider])
+    if remix_model:
+        cmd.extend(["-m", remix_model])
+    cmd.extend(["-q", build_remix_prompt(items, meta, limit)])
     result = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"Hermes remix failed: {result.stderr.strip() or result.stdout.strip()}")
     markdown = clean_hermes_output(result.stdout)
     if "# AI Builders Digest" not in markdown:
         raise RuntimeError("Hermes remix returned unexpected output")
+    validate_chinese_digest(markdown)
     return markdown
 
 

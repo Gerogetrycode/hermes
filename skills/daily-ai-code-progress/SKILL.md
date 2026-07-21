@@ -89,7 +89,7 @@ hermes cron create '0 8-12 * * *' \
   --skill daily-ai-code-progress \
   --script daily_ai_code_progress.py \
   --no-agent \
-  --workdir /Users/bytedance/.codex/worktrees/9364/hermes \
+  --workdir /Users/bytedance/Documents/hermes/myskill \
   'Deliver the generated AI Code daily digest.'
 ```
 

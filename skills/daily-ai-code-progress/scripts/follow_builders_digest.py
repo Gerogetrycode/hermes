@@ -119,15 +119,6 @@ TOPIC_RULES = [
     ("工程组织与产品", ["workflow", "developer", "product", "startup", "company"]),
 ]
 
-TOPIC_IMPLICATIONS = {
-    "MCP / API 工具层": "实践含义是，团队在评估 agent 工具链时要重点看接口稳定性、权限边界和可观测性，而不是只看模型本身能不能调用工具。",
-    "coding agent 工作流": "实践含义是，AI coding 的价值越来越取决于能否接入真实仓库、测试、评审和审批流程，而不只是单次补全或生成代码。",
-    "模型与成本治理": "实践含义是，容量、计量和价格会直接影响 agent 的落地形态，企业需要把调用预算、失败重试和使用审计纳入设计。",
-    "安全与沙箱": "实践含义是，agent 进入开发环境后，最先要解决的是权限最小化、命令审计、密钥保护和可回滚执行，而不是完全放开自动化。",
-    "工程组织与产品": "实践含义是，AI coding 工具已经在改变产品交付链路，团队需要重新定义哪些环节交给 agent，哪些环节必须保留人工判断。",
-    "AI builders 动态": "实践含义是，这类 builders 原始信号可帮助判断开发者工具、模型 API 和工程自动化的早期方向，但仍要结合自身场景验证。",
-}
-
 FALLBACK_SIGNAL_RULES = [
     ("AI 成本、使用量与总支出的关系", ["cost", "pricing", "spend", "budget", "capex", "token"]),
     ("个人评测集、模型比较与选型方法", ["personal eval", "benchmark", "eval set", "model selection"]),
@@ -350,10 +341,6 @@ def classify_topic(text: str) -> str:
     return "AI builders 动态"
 
 
-def topic_implication(topic: str) -> str:
-    return TOPIC_IMPLICATIONS.get(topic, TOPIC_IMPLICATIONS["AI builders 动态"])
-
-
 def fallback_focuses(item: DigestItem, limit: int = 3) -> list[str]:
     text = f"{item.title}\n{item.summary}\n{item.raw_content}".lower()
     focuses = [label for label, terms in FALLBACK_SIGNAL_RULES if any(term in text for term in terms)]
@@ -364,31 +351,26 @@ def fallback_chinese_summary(item: DigestItem) -> str:
     """Render a Chinese-first summary without copying long source excerpts.
 
     This path is used when the semantic remix model is unavailable. It stays
-    conservative: describe detected themes and reading implications, but do
-    not pretend to have translated or inferred claims that local rules cannot
-    verify.
+    conservative: describe detected themes without adding a generic implication
+    sentence that the source itself may not support.
     """
     topic = classify_topic(f"{item.title}\n{item.summary}\n{item.raw_content}")
     focus = "、".join(fallback_focuses(item))
-    implication = topic_implication(topic)
     if item.source.startswith("X / "):
         author = item.source.removeprefix("X / ").strip() or "这位 builder"
         return (
-            f"{author} 的这条动态聚焦「{topic}」，具体涉及{focus}。"
-            "这类一线观点适合用来观察开发者和产品团队正在关注哪些问题，但不能脱离原帖上下文直接当作结论；"
-            f"阅读时应继续核对作者给出的案例、前提和限制。{implication}"
+            f"{author} 的这条动态聚焦「{topic}」，可识别的主题包括{focus}。"
+            "原帖信息较短，建议打开链接核对作者的具体表述、例子和前提。"
         )
     if item.source.startswith("Podcast / "):
         show = item.source.removeprefix("Podcast / ").strip() or "这期播客"
         return (
             f"这期 {show} 围绕「{topic}」展开，讨论重点包括{focus}。"
-            "收听时值得重点核对嘉宾提出的机制、风险和实际案例，并区分个人判断与已经验证的工程经验；"
-            f"这样才能把访谈观点转化为可执行的选型依据。{implication}"
+            "本地摘要只保留可识别主题，具体观点以节目原文为准。"
         )
     return (
         f"这篇来自 {item.source} 的内容围绕「{topic}」展开，重点涉及{focus}。"
-        "阅读时应优先核对原文中的具体机制、数据和适用范围，避免只凭标题或单段摘录做判断；"
-        f"对工程团队而言，更重要的是确认这些变化能否进入现有开发与治理流程。{implication}"
+        "具体机制、数据和适用范围以原文为准。"
     )
 
 
@@ -409,6 +391,8 @@ def validate_chinese_digest(markdown: str) -> None:
             raise RuntimeError(f"Hermes remix summary {index} is not Chinese-first")
         if re.search(r"(?:\b[A-Za-z][A-Za-z'’-]*\b[\s,;:()'’-]*){20,}", summary):
             raise RuntimeError(f"Hermes remix summary {index} contains a long English passage")
+        if re.search(r"(?:实践含义是|价值在于|意义在于|对(?:工程)?团队而言|对(?:工程)?团队的(?:价值|意义)在于)", summary):
+            raise RuntimeError(f"Hermes remix summary {index} uses generic commentary boilerplate")
 
 
 def signal_score(text: str) -> int:
@@ -473,7 +457,7 @@ def collect_x_items(feed: dict) -> list[DigestItem]:
         published = parse_date(str(top[0].get("createdAt") or ""))
         url = str(top[0].get("url") or (f"https://x.com/{handle}" if handle else ""))
         snippets = "；".join(short_text(str(tweet.get("text", "")), 120) for tweet in top[:2])
-        summary = f"{name} 最近围绕「{topic}」有值得看的观点。核心信息：{snippets}。{topic_implication(topic)}"
+        summary = f"{name} 最近围绕「{topic}」发布了相关动态。核心信息：{snippets}。"
         item = DigestItem(
             title=f"{name}: {topic}",
             url=url,
@@ -514,8 +498,7 @@ def collect_podcast_items(feed: dict) -> list[DigestItem]:
         source_name = str(podcast.get("name") or "Podcast")
         summary = (
             f"这一期 {source_name} 适合关注「{topic}」。"
-            f"要点是：{excerpt} "
-            f"{topic_implication(topic)}"
+            f"要点是：{excerpt}"
         )
         item = DigestItem(
             title=title,
@@ -544,8 +527,7 @@ def collect_blog_items(feed: dict) -> list[DigestItem]:
             continue
         topic = classify_topic(haystack)
         summary = (
-            f"这篇文章的主线是「{topic}」。{short_text(body or title, 320)} "
-            f"{topic_implication(topic)}"
+            f"这篇文章的主线是「{topic}」。{short_text(body or title, 320)}"
         )
         item = DigestItem(
             title=title,
@@ -692,9 +674,11 @@ def build_remix_prompt(items: list[DigestItem], meta: dict, limit: int) -> str:
         "1. 优先选择对 AI coding、agent 工作流、MCP/API 工具层、IDE、sandbox、eval、repo/CI、模型 API 落地有实践意义的内容。\n"
         "2. 跳过泛创业鸡汤、寒暄、纯推广、只有热度但缺少工程含义的动态。\n"
         "3. 可以选择 podcast/blog/X 任意来源，但不要为了来源多样性牺牲质量。\n"
-        "4. 每条摘要写 150-250 个中文字符，讲清楚：发生了什么、为什么值得看、对工程团队或工具选型有什么启发。\n"
+        "4. 每条摘要写 120-220 个中文字符，讲清楚来源本身说了什么、提到的例子/机制/限制是什么；"
+        "只有当来源明确支持时，才用一句短点评说明可读性或影响。\n"
         "   摘要正文必须以中文为主。产品名、代码标识符可以保留英文，但不要复制完整英文句子；任何英文直接引语不得超过 20 个英文单词。\n"
-        "5. 不要复用固定套话，尤其不要写“相比零散 changelog”这类反复句式。\n"
+        "5. 不要复用固定套话，尤其不要写“相比零散 changelog”“实践含义是”“价值在于”“意义在于”“对工程团队而言”这类反复句式；"
+        "如果找不到贴合原帖的点评，就只做事实摘要。\n"
         "6. 只使用 JSON 中已有信息，不要编造数据、发布日期、产品能力或人物身份。\n"
         "7. 每条标题必须使用原始链接，格式为 `## 1. [标题](URL)`，并保留来源和日期。\n\n"
         "8. 不要输出筛选说明、候选统计、额外解释或 Markdown 代码围栏；只输出最终简报正文。\n\n"

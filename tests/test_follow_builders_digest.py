@@ -42,6 +42,7 @@ class ChineseDigestQualityTest(unittest.TestCase):
         self.assertGreaterEqual(digest.chinese_text_share(summary), 0.75)
         self.assertNotIn("A lot of people make the mistake", summary)
         self.assertIn("AI 成本、使用量与总支出的关系", summary)
+        self.assertNotRegex(summary, r"实践含义是|价值在于|意义在于|对(?:工程)?团队而言")
 
     def test_renderer_uses_safe_chinese_fallback(self):
         markdown = digest.render_builders_markdown(
@@ -66,11 +67,21 @@ class ChineseDigestQualityTest(unittest.TestCase):
         markdown = (
             "# AI Builders Digest - 2026-07-21\n\n"
             "- 摘要：这条动态讨论了 AI 成本下降后使用量和总支出之间的关系。"
-            "对工程团队而言，重点是把 token 预算、失败重试、容量规划和使用审计放进同一套治理框架，"
-            "并通过真实业务指标验证模型带来的效率提升，而不是仅根据单次调用价格判断长期成本。\n"
+            "原帖强调调用价格降低并不必然带来总支出下降，因为更多团队会扩大使用量；"
+            "读这条时应关注作者讨论的是成本曲线和采用规模之间的关系，而不是单次调用价格本身。\n"
         )
 
         digest.validate_chinese_digest(markdown)
+
+    def test_validator_rejects_generic_commentary_boilerplate(self):
+        markdown = (
+            "# AI Builders Digest - 2026-07-21\n\n"
+            "- 摘要：这条动态讨论 coding agent 的工作流变化，提到任务拆分、执行反馈和上下文管理。"
+            "对工程团队而言，重点是把这些能力纳入现有研发流程，并持续观察工具链成熟度。\n"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "generic commentary boilerplate"):
+            digest.validate_chinese_digest(markdown)
 
 
 if __name__ == "__main__":

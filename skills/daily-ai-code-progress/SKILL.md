@@ -43,8 +43,9 @@ Use this skill to produce a short daily digest of AI builders, AI coding, and co
    - Title: `AI Builders Digest - YYYY-MM-DD`
    - Aim for about 5 items on normal days; include more only when the sources are genuinely high quality, and keep the digest at 10 items or fewer.
    - Use clickable Markdown titles: `[title](url)`.
-   - Each item should include source, date, and a Chinese summary of roughly 150-250 Chinese characters.
+   - Each item should include source, date, and a Chinese summary of roughly 120-220 Chinese characters.
    - Prefer builder-level insight over generic product announcements.
+   - Do not append generic "practice implication" or "team value" sentences to every item. Add a short comment only when it is grounded in the source itself; otherwise keep the item as a factual summary.
    - Do not reuse fixed boilerplate sentences across items.
 
 7. Keep the faiyi.com daily AI brief separate. The runner fetches the latest post from `http://www.faiyi.com/?cat=7` through the WordPress REST API and sends it as a second Feishu card. Do not merge the two briefs into one message.

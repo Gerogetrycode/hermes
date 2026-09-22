@@ -25,7 +25,7 @@ from typing import Iterable
 
 
 FOLLOW_BUILDERS_REPO = "https://github.com/zarazhangrui/follow-builders"
-FOLLOW_BUILDERS_COMMIT = "3b1d3c7b8269e158e05dd79f8a3aabb9e8e8e60a"
+FOLLOW_BUILDERS_COMMIT = "ff1603c1ee29dfd1f9c56f95c2fd82daf2f004fe"
 FEED_X_URL = "https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-x.json"
 FEED_PODCASTS_URL = "https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-podcasts.json"
 FEED_BLOGS_URL = "https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-blogs.json"
@@ -356,21 +356,25 @@ def fallback_chinese_summary(item: DigestItem) -> str:
     """
     topic = classify_topic(f"{item.title}\n{item.summary}\n{item.raw_content}")
     focus = "、".join(fallback_focuses(item))
+    source_boundary = (
+        "这份保底摘要不补充来源之外的事实或结论；为避免误读，"
+        "具体机制、数据、案例和适用前提请通过原文链接核对。"
+    )
     if item.source.startswith("X / "):
         author = item.source.removeprefix("X / ").strip() or "这位 builder"
         return (
             f"{author} 的这条动态聚焦「{topic}」，可识别的主题包括{focus}。"
-            "原帖信息较短，建议打开链接核对作者的具体表述、例子和前提。"
+            f"原帖信息较短。{source_boundary}"
         )
     if item.source.startswith("Podcast / "):
         show = item.source.removeprefix("Podcast / ").strip() or "这期播客"
         return (
             f"这期 {show} 围绕「{topic}」展开，讨论重点包括{focus}。"
-            "本地摘要只保留可识别主题，具体观点以节目原文为准。"
+            f"本地摘要只保留可识别主题。{source_boundary}"
         )
     return (
         f"这篇来自 {item.source} 的内容围绕「{topic}」展开，重点涉及{focus}。"
-        "具体机制、数据和适用范围以原文为准。"
+        f"{source_boundary}"
     )
 
 
@@ -594,6 +598,11 @@ def collect_builders_digest(limit: int, state_path: Path, include_seen: bool, ca
             "x": x_status,
             "podcasts": podcasts_status,
             "blogs": blogs_status,
+        },
+        "feedErrors": {
+            name: [str(error) for error in feed.get("errors", []) if error]
+            for name, feed in feeds.items()
+            if isinstance(feed.get("errors"), list) and feed.get("errors")
         },
     }
     return selected[:limit], meta
@@ -863,7 +872,7 @@ def feishu_token() -> str:
     return str(token)
 
 
-def send_feishu_card(chat_id: str, card: dict, thread_id: str = "") -> str:
+def send_feishu_card(chat_id: str, card: dict, thread_id: str = "", *, message_uuid: str = "") -> str:
     token = feishu_token()
     receive_id = thread_id or chat_id
     receive_id_type = "thread_id" if thread_id else ("open_id" if chat_id.startswith("ou_") else "chat_id")
@@ -872,7 +881,7 @@ def send_feishu_card(chat_id: str, card: dict, thread_id: str = "") -> str:
         "receive_id": receive_id,
         "msg_type": "interactive",
         "content": json.dumps(card, ensure_ascii=False),
-        "uuid": str(uuid.uuid4()),
+        "uuid": message_uuid or str(uuid.uuid4()),
     }
     request = urllib.request.Request(
         url,
@@ -883,7 +892,10 @@ def send_feishu_card(chat_id: str, card: dict, thread_id: str = "") -> str:
     if payload.get("code") not in (0, None):
         raise RuntimeError(f"Feishu card send failed: {payload}")
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    return str(data.get("message_id") or "")
+    message_id = str(data.get("message_id") or "")
+    if not message_id:
+        raise RuntimeError("Feishu returned no message_id; delivery is not confirmed")
+    return message_id
 
 
 def save_local_output(markdown: str, output_dir: Path) -> Path:

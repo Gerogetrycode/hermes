@@ -18,6 +18,12 @@ SPEC.loader.exec_module(digest)
 
 
 class ChineseDigestQualityTest(unittest.TestCase):
+    def test_tracks_current_follow_builders_main_revision(self):
+        self.assertEqual(
+            digest.FOLLOW_BUILDERS_COMMIT,
+            "ff1603c1ee29dfd1f9c56f95c2fd82daf2f004fe",
+        )
+
     def make_x_item(self):
         return digest.DigestItem(
             title="Aaron Levie: 模型与成本治理",
@@ -51,6 +57,20 @@ class ChineseDigestQualityTest(unittest.TestCase):
 
         digest.validate_chinese_digest(markdown)
         self.assertNotIn("Usually the opposite happens", markdown)
+
+    def test_blog_fallback_meets_delivery_validator(self):
+        item = digest.DigestItem(
+            title="Agent runtime update",
+            url="https://example.com/update",
+            source="Example Engineering",
+            published="2026-09-22",
+            summary="Agent runtime update for coding workflows",
+            score=100,
+        )
+        markdown = digest.render_builders_markdown(
+            [item], {"feedGeneratedAt": "2026-09-22T00:00:00Z"}
+        )
+        digest.validate_chinese_digest(markdown)
 
     def test_validator_rejects_english_dominant_summary(self):
         markdown = (

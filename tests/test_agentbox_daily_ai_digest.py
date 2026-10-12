@@ -147,12 +147,42 @@ class AgentBoxDigestTest(unittest.TestCase):
             retry_body = json.loads(request.call_args.args[0].data)
             self.assertIn("上一版未通过校验", retry_body["messages"][-1]["content"])
 
-    def test_remix_uses_validated_local_fallback_after_two_invalid_responses(self):
-        item = runner.digest.DigestItem(
+    def test_remix_keeps_only_valid_sections_after_two_invalid_responses(self):
+        bad_item = runner.digest.DigestItem(
             title="模型成本", url="https://x.com/a/status/2", source="X / a",
             published="2026-09-10",
             summary="这条动态讨论模型调用成本、使用规模和总支出之间的关系。" * 5,
             score=1,
+        )
+        good_item = runner.digest.DigestItem(
+            title="工具更新", url="https://x.com/b/status/3", source="X / b",
+            published="2026-09-10", summary="这条动态讨论工具更新。" * 5, score=1,
+        )
+        good_summary = "这条动态介绍工具调用和权限管理的新做法，并解释了更新对实际开发流程的影响。" * 3
+        invalid = (
+            f"# AI Builders Digest - {dt.date.today()}\n\n"
+            f"## 1. [模型成本]({bad_item.url})\n\n- 来源：X / a\n- 日期：2026-09-10\n"
+            "- 摘要：对工程团队而言，重点是持续观察工具链成熟度。\n"
+            f"\n## 2. [工具更新]({good_item.url})\n\n- 来源：X / b\n- 日期：2026-09-10\n"
+            f"- 摘要：{good_summary}\n"
+        )
+        payload = {"choices": [{"finish_reason": "stop", "message": {"content": invalid}}]}
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test"}), patch.object(
+            runner.digest, "open_with_retries", side_effect=[json.dumps(payload).encode()] * 2
+        ) as request:
+            result = runner.remix([bad_item, good_item], {"feedGeneratedAt": "2026-09-10T00:00:00Z"}, 5)
+            self.assertEqual(request.call_count, 2)
+            self.assertIn(good_summary, result)
+            self.assertIn("部分摘要未通过质量校验", result)
+            self.assertNotIn(bad_item.url, result)
+            self.assertNotIn("这份保底摘要", result)
+            self.assertNotIn("对工程团队而言", result)
+            runner.validate_remix(result, [bad_item, good_item], 5)
+
+    def test_remix_fails_closed_when_no_summary_is_valid(self):
+        item = runner.digest.DigestItem(
+            title="模型成本", url="https://x.com/a/status/2", source="X / a",
+            published="2026-09-10", summary="模型成本变化。", score=1,
         )
         invalid = (
             f"# AI Builders Digest - {dt.date.today()}\n\n"
@@ -162,12 +192,9 @@ class AgentBoxDigestTest(unittest.TestCase):
         payload = {"choices": [{"finish_reason": "stop", "message": {"content": invalid}}]}
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test"}), patch.object(
             runner.digest, "open_with_retries", side_effect=[json.dumps(payload).encode()] * 2
-        ) as request:
-            result = runner.remix([item], {"feedGeneratedAt": "2026-09-10T00:00:00Z"}, 5)
-            self.assertEqual(request.call_count, 2)
-            self.assertIn("AI Builders Digest", result)
-            self.assertNotIn("对工程团队而言", result)
-            runner.validate_remix(result, [item], 5)
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no valid Chinese summaries"):
+                runner.remix([item], {}, 5)
 
 
 if __name__ == "__main__":

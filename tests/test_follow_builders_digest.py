@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import datetime as dt
 import sys
 import unittest
 from pathlib import Path
@@ -102,6 +103,32 @@ class ChineseDigestQualityTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "generic commentary boilerplate"):
             digest.validate_chinese_digest(markdown)
+
+    def test_podcast_candidates_must_be_from_the_last_week(self):
+        today = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date()
+        def podcast(age):
+            return {
+                "title": "Coding agent and developer tools", "name": "Example Podcast",
+                "url": f"https://example.com/{age}",
+                "publishedAt": (today - dt.timedelta(days=age)).isoformat(),
+                "transcript": "Coding agent developer tools and API workflow. " * 8,
+            }
+        items = digest.collect_podcast_items({"podcasts": [podcast(7), podcast(8), podcast(-1)]})
+        self.assertEqual([item.url for item in items], ["https://example.com/7"])
+
+    def test_cards_allow_future_in_place_updates(self):
+        card = digest.build_card("标题", "正文", "blue", 100)
+        self.assertIs(card["config"]["update_multi"], True)
+
+    def test_x_candidates_need_enough_source_detail_to_summarize(self):
+        feed = {"x": [{
+            "name": "Builder", "handle": "builder",
+            "tweets": [{
+                "text": "Working With Agents in Slack", "likes": 1000,
+                "url": "https://x.com/builder/status/1", "createdAt": "2026-10-10T00:00:00Z",
+            }],
+        }]}
+        self.assertEqual(digest.collect_x_items(feed), [])
 
 
 if __name__ == "__main__":

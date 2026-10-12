@@ -455,6 +455,8 @@ def collect_x_items(feed: dict) -> list[DigestItem]:
         scored.sort(key=lambda pair: pair[0], reverse=True)
         top = [tweet for _, tweet in scored[:3]]
         combined = " ".join(str(tweet.get("text", "")) for tweet in top)
+        if len(clean_text(combined)) < 80:
+            continue
         topic = classify_topic(combined)
         name = str(account.get("name") or account.get("handle") or "AI builder")
         handle = str(account.get("handle") or "").strip()
@@ -488,8 +490,16 @@ def transcript_excerpt(transcript: str, terms: list[str], max_chars: int = 420) 
 
 def collect_podcast_items(feed: dict) -> list[DigestItem]:
     items: list[DigestItem] = []
+    today = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date()
     for podcast in feed.get("podcasts", []) or []:
         if not isinstance(podcast, dict):
+            continue
+        published = parse_date(str(podcast.get("publishedAt") or ""))
+        try:
+            age = (today - dt.date.fromisoformat(published)).days
+        except ValueError:
+            continue
+        if not 0 <= age <= 7:
             continue
         title = str(podcast.get("title") or podcast.get("name") or "Podcast")
         transcript = str(podcast.get("transcript") or "")
@@ -508,7 +518,7 @@ def collect_podcast_items(feed: dict) -> list[DigestItem]:
             title=title,
             url=str(podcast.get("url") or ""),
             source=f"Podcast / {source_name}",
-            published=parse_date(str(podcast.get("publishedAt") or "")),
+            published=published,
             summary=summary,
             score=score,
             raw_content=excerpt,
@@ -623,8 +633,11 @@ def mark_sent(items: list[DigestItem], state_path: Path) -> None:
     save_state(state_path, state)
 
 
-def render_builders_markdown(items: list[DigestItem], meta: dict) -> str:
-    today = dt.datetime.now().date().isoformat()
+def render_builders_markdown(
+    items: list[DigestItem], meta: dict, *, summaries: dict[str, str] | None = None,
+    note: str = "", date: str | None = None,
+) -> str:
+    today = date or dt.datetime.now().date().isoformat()
     lines = [
         f"# AI Builders Digest - {today}",
         "",
@@ -642,16 +655,18 @@ def render_builders_markdown(items: list[DigestItem], meta: dict) -> str:
                 "",
                 f"- 来源：{item.source}",
                 f"- 日期：{date_part}",
-                f"- 摘要：{fallback_chinese_summary(item)}",
+                f"- 摘要：{summaries[item.url] if summaries is not None else fallback_chinese_summary(item)}",
                 "",
             ]
         )
+    if note:
+        lines.extend([note, ""])
     lines.append(f"_Feed skill: {FOLLOW_BUILDERS_REPO} @ {FOLLOW_BUILDERS_COMMIT[:7]}_")
     return "\n".join(lines)
 
 
-def build_remix_prompt(items: list[DigestItem], meta: dict, limit: int) -> str:
-    today = dt.datetime.now().date().isoformat()
+def build_remix_prompt(items: list[DigestItem], meta: dict, limit: int, date: str | None = None) -> str:
+    today = date or dt.datetime.now().date().isoformat()
     payload = {
         "date": today,
         "source": {
@@ -833,7 +848,7 @@ def build_card(title: str, markdown: str, template: str, max_chars: int) -> dict
         clipped = clipped[: max_chars - 120].rstrip() + "\n\n_内容较长，已截断；请打开原文链接查看完整内容。_"
     elements = [{"tag": "markdown", "content": chunk} for chunk in markdown_chunks(clipped)]
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {"title": {"tag": "plain_text", "content": title[:80]}, "template": template},
         "elements": elements,
     }

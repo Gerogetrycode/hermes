@@ -385,13 +385,13 @@ def chinese_text_share(text: str) -> float:
     return chinese_chars / total if total else 0.0
 
 
-def validate_chinese_digest(markdown: str) -> None:
+def validate_chinese_digest(markdown: str, *, min_chinese_chars: int = 60) -> None:
     summaries = re.findall(r"(?m)^-\s*摘要：\s*(.+)$", markdown)
     if not summaries:
         raise RuntimeError("Hermes remix returned no digest summaries")
     for index, summary in enumerate(summaries, 1):
         chinese_chars = len(re.findall(r"[\u3400-\u9fff]", summary))
-        if chinese_chars < 60 or chinese_text_share(summary) < 0.45:
+        if chinese_chars < min_chinese_chars or chinese_text_share(summary) < 0.45:
             raise RuntimeError(f"Hermes remix summary {index} is not Chinese-first")
         if re.search(r"(?:\b[A-Za-z][A-Za-z'’-]*\b[\s,;:()'’-]*){20,}", summary):
             raise RuntimeError(f"Hermes remix summary {index} contains a long English passage")

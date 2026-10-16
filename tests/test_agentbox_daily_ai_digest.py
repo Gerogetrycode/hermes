@@ -70,6 +70,7 @@ class AgentBoxDigestTest(unittest.TestCase):
             self.assertFalse((root / "seen.json").exists())
             self.assertFalse((root / "deliveries").exists())
             self.assertTrue((root / "previews" / f"{dt.date.today()}.md").exists())
+            self.assertFalse(json.loads((root / "previews" / f"{dt.date.today()}.json").read_text())["completed"])
 
     def test_generation_failure_never_sends_or_marks_complete(self):
         with tempfile.TemporaryDirectory() as directory:

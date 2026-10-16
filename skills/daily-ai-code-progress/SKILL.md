@@ -1,6 +1,6 @@
 ---
 name: daily-ai-code-progress
-description: Produce a concise daily AI builders and AI coding digest using follow-builders central feeds, then send it as a Feishu card alongside a separate faiyi.com daily AI brief card.
+description: Combine Builders, faiyi.com, and AIHOT into one concise Chinese Feishu card with three sections and event deduplication.
 license: MIT
 metadata:
   hermes:
@@ -12,7 +12,25 @@ metadata:
 
 Use this skill to produce a short daily digest of AI builders, AI coding, and coding-agent progress.
 
-## Workflow
+## Scheduled delivery (AgentBox)
+
+The production entrypoint is `scripts/agentbox_daily_ai_digest.py`. It collects three sources and sends **one Card 2.0 card** with sections in this fixed priority order:
+
+1. Builders: follow-builders X posts, podcasts, and blogs.
+2. 理想栈: Chinese news items parsed from the latest faiyi.com daily brief, retaining original links and article publication date.
+3. AIHOT: the selected items from the past 24 hours via its JSON `/api/v1/items` interface, using `User-Agent: aihot-api/2.0.0`. Link the title to the AIHOT reading page and retain source attribution and original links.
+
+Normalize original URLs to remove exact duplicates, then use the existing direct DeepSeek provider to select and summarize candidates and identify same-event reports across different titles, languages, or sites. A duplicate refers only to a retained item in an earlier section (or earlier in the same section). Different events from the same company must remain separate. Keep at most five items per section, with concise Chinese summaries, key numbers, and source qualifiers. No generic fallback summaries.
+
+The card has one overview and three separate source blocks. Empty sections remain visible with a short explanation. Candidate inputs, selected items, duplicate mappings, source timestamps, and delivery receipts are persisted for inspection. Normal daily runs use `deliveries/YYYY-MM-DD.json`; completed legacy two-card receipts remain valid and are not resent. Incomplete legacy receipts can still resume.
+
+Run `python3 scripts/agentbox_daily_ai_digest.py --preview` for a non-sending preview. To send one explicitly requested same-day example after an older daily delivery, use `--sample`; it has its own idempotent receipt under `samples/YYYY-MM-DD.json` and does not overwrite the normal daily receipt. Use the configured production env/state paths on AgentBox. The cron remains `0 8-12 * * *` in Asia/Shanghai with no extra scheduler delivery.
+
+To send an inspected preview unchanged, use `--sample --sample-from-preview PATH`. The preview must have today's date, the configured target, one combined Card 2.0 payload, and no prior receipt. Summaries are compact Chinese paragraphs; short factual updates need not be padded to the legacy Builders summary length. Duplicate mappings carry the shared subject and source excerpts for review.
+
+## Legacy collector / local diagnostics
+
+The standalone collector below remains available for Builders diagnostics. Its legacy two-card send mode is not the production scheduled delivery path.
 
 1. Run the bundled follow-builders based collector from the repository root:
 
@@ -33,10 +51,10 @@ Use this skill to produce a short daily digest of AI builders, AI coding, and co
    - Podcast episodes with concrete discussion of MCP, APIs, coding agents, developer tools, model economics, or security.
    - Official/blog content when it has practical engineering implications.
 
-5. Avoid repeats. The collector excludes items already marked in its state file. After finalizing a digest, mark the sent items and send Feishu cards:
+5. Avoid repeats. The collector excludes items already marked in its state file. For production delivery and sent-state updates, use the AgentBox entrypoint. To inspect raw candidates without sending:
 
    ```bash
-   python3 skills/daily-ai-code-progress/scripts/follow_builders_digest.py --mark-sent --send-feishu
+   python3 skills/daily-ai-code-progress/scripts/follow_builders_digest.py --include-seen --no-agent-remix
    ```
 
 6. Write the builders digest in Chinese unless the user asks otherwise. Keep it compact but informative:
@@ -48,7 +66,7 @@ Use this skill to produce a short daily digest of AI builders, AI coding, and co
    - Do not append generic "practice implication" or "team value" sentences to every item. Add a short comment only when it is grounded in the source itself; otherwise keep the item as a factual summary.
    - Do not reuse fixed boilerplate sentences across items.
 
-7. Keep the faiyi.com daily AI brief separate. The runner fetches the latest post from `http://www.faiyi.com/?cat=7` through the WordPress REST API and sends it as a second Feishu card. Do not merge the two briefs into one message.
+7. Production delivery merges this content with faiyi.com and AIHOT through the AgentBox entrypoint described above.
 
 ## Quality Rules
 
@@ -70,32 +88,6 @@ By default the collector stores sent fingerprints and local rendered outputs und
 
 Use `--state PATH` when a different durable state location is needed for an automation.
 
-## Hermes Cron
+## Legacy Hermes Cron
 
-For local Hermes scheduling, install the skill into Hermes and run it with the bundled runner:
-
-```bash
-mkdir -p ~/.hermes/skills/research/daily-ai-code-progress
-cp skills/daily-ai-code-progress/SKILL.md ~/.hermes/skills/research/daily-ai-code-progress/SKILL.md
-mkdir -p ~/.hermes/scripts
-cp skills/daily-ai-code-progress/scripts/hermes_daily_ai_code_progress.py ~/.hermes/scripts/daily_ai_code_progress.py
-```
-
-Recommended cron job. Use an 8:00-12:00 retry window rather than a single daily tick; the runner skips once a same-day output already exists, so this still sends at most once per day while recovering from morning DNS/network failures.
-
-```bash
-hermes cron create '0 8-12 * * *' \
-  --name 'Daily AI Code Progress' \
-  --deliver local \
-  --skill daily-ai-code-progress \
-  --script daily_ai_code_progress.py \
-  --no-agent \
-  --workdir /Users/bytedance/Documents/hermes/myskill \
-  'Deliver the generated AI Code daily digest.'
-```
-
-The runner sends two Feishu interactive cards itself: one AI Builders card and one faiyi.com card. It also refuses to rerun for the same date unless `DAILY_AI_CODE_FORCE=1` is set. Keep Hermes cron delivery set to `local` so the cron system does not send a third combined text message. For a manual preview without sending cards or marking state, run:
-
-```bash
-DAILY_AI_CODE_PREVIEW=1 python3 ~/.hermes/scripts/daily_ai_code_progress.py
-```
+The old local Hermes job was paused during the AgentBox cutover. Do not enable it alongside the AgentBox job. Its historical runner and collector remain for diagnostics and compatibility; scheduled single-card delivery uses `agentbox_daily_ai_digest.py`.

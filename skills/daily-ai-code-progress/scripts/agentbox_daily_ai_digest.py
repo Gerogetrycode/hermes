@@ -19,6 +19,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import follow_builders_digest as digest
+import combined_ai_digest as combined
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -144,32 +145,38 @@ def remix(items: list[digest.DigestItem], meta: dict, limit: int, date: str | No
 
 
 def prepare(root: Path, preview: bool) -> dict:
-    limit = min(max(int(os.environ.get("DAILY_AI_CODE_LIMIT", "10")), 1), 10)
+    limit = min(max(int(os.environ.get("DAILY_AI_SECTION_LIMIT", "5")), 1), 5)
+    now = dt.datetime.now(combined.TZ)
+    today = now.date().isoformat()
     items, meta = digest.collect_builders_digest(
-        max(limit * 3, 12), root / "seen.json", include_seen=preview, cache_dir=root / "cache",
+        24, root / "seen.json", include_seen=preview, cache_dir=root / "cache",
     )
-    builders = remix(items, meta, limit) if items else digest.render_builders_markdown([], meta)
-    faiyi = digest.latest_faiyi_brief()
-    if any(error in faiyi for error in ("未能获取最新文章。", "返回内容格式异常。", "未能解析正文内容。")):
-        raise RuntimeError("faiyi content is unavailable; retry without sending")
-    selected_urls = set(re.findall(r"(?m)^## \d+\. \[.*?\]\((https?://[^\s)]+)\)", builders))
-    today = dt.datetime.now().date().isoformat()
+    builder_news = combined.builders_items(items, now.date())
+    faiyi, faiyi_meta = combined.collect_faiyi(now.date())
+    aihot, aihot_meta = combined.collect_aihot(now)
+    source_items = builder_news + faiyi + aihot
+    candidates, exact_duplicates = combined.exact_dedupe(source_items)
+    metadata = {"builders": meta, "faiyi": faiyi_meta, "aihot": aihot_meta,
+                "collected_at": now.isoformat(timespec="seconds")}
+    atomic_json(root / "inputs" / f"{today}.combined.json", {
+        "metadata": metadata, "candidates": [asdict(item) for item in candidates], "exact_duplicates": exact_duplicates,
+    })
+    print(f"Source candidates: Builders={len(builder_news)}, faiyi={len(faiyi)}, AIHOT={len(aihot)}", flush=True)
+    selected, semantic_duplicates = combined.compose(candidates, limit, audit_path=root / "inputs" / f"{today}.remix.json")
+    duplicates = exact_duplicates + semantic_duplicates
+    markdown, card = combined.render(selected, today, len(duplicates), metadata)
+    consumed_ids = {row["id"] for row in selected}
+    for _ in range(len(duplicates)):
+        consumed_ids.update(row["id"] for row in duplicates if row["of"] in consumed_ids)
+    selected_urls = {item.url for item in builder_news if item.id in consumed_ids}
     chat = os.environ.get("FEISHU_HOME_CHANNEL", "").strip()
     thread = os.environ.get("FEISHU_HOME_CHANNEL_THREAD_ID", "").strip()
-    cards = []
-    for kind, title, text, color, size in (
-        ("builders", f"AI Builders Digest - {today}", builders, "blue", 18000),
-        ("faiyi", f"理想栈 AI动态简报 - {today}", faiyi, "green", 24000),
-    ):
-        cards.append({
-            "kind": kind,
-            "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"daily-ai-digest:{today}:{chat}:{thread}:{kind}")),
-            "card": digest.build_card(title, digest.card_display_markdown(text), color, size),
-            "message_id": "",
-        })
+    cards = [{"kind": "combined", "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"daily-ai-digest:{today}:{chat}:{thread}:combined")),
+              "card": card, "message_id": ""}]
     return {
         "date": today, "chat_id": chat, "thread_id": thread, "completed": False,
-        "markdown": f"{builders}\n\n---\n\n{faiyi}", "cards": cards,
+        "markdown": markdown, "cards": cards, "sources": metadata,
+        "selection": {"keep": selected, "duplicates": duplicates},
         "selected": [asdict(item) for item in items if item.url in selected_urls],
     }
 
@@ -187,13 +194,13 @@ def deliver(root: Path, manifest_path: Path, manifest: dict) -> None:
         atomic_json(manifest_path, manifest)
         print(f"Feishu {entry['kind']} sent: {entry['message_id']}")
     # A retry after either send resumes the same payload and preserves its UUID.
-    # The completed flag is committed only after both receipts and dedupe state.
+    # Legacy two-card manifests still resume safely; new runs have one receipt.
     digest.mark_sent([digest.DigestItem(**item) for item in manifest["selected"]], root / "seen.json")
     manifest["completed"] = True
     atomic_json(manifest_path, manifest)
 
 
-def run(root: Path, preview: bool = False) -> int:
+def run(root: Path, preview: bool = False, sample: bool = False, prepared: Path | None = None) -> int:
     root.mkdir(parents=True, exist_ok=True)
     with (root / "run.lock").open("a") as lock:
         try:
@@ -202,7 +209,7 @@ def run(root: Path, preview: bool = False) -> int:
             print("Another digest run is in progress; skipped")
             return 0
         today = dt.datetime.now().date().isoformat()
-        path = root / "deliveries" / f"{today}.json"
+        path = root / ("samples" if sample else "deliveries") / f"{today}.json"
         manifest = json.loads(path.read_text(encoding="utf-8")) if path.exists() and not preview else None
         if manifest and manifest.get("completed"):
             print(f"Already delivered for {today}; skipped")
@@ -212,13 +219,30 @@ def run(root: Path, preview: bool = False) -> int:
             if not isinstance(state, dict) or not isinstance(state.get("seen"), dict):
                 raise RuntimeError("Invalid dedupe state; refusing to reset it")
         if manifest is None:
-            manifest = prepare(root, preview)
+            if prepared is not None:
+                if not sample or preview:
+                    raise RuntimeError("a prepared preview can only be sent as a sample")
+                manifest = json.loads(prepared.read_text(encoding="utf-8"))
+                cards = manifest.get("cards", [])
+                if (manifest.get("date") != today or manifest.get("completed") or len(cards) != 1
+                        or cards[0].get("kind") != "combined" or cards[0].get("message_id")
+                        or cards[0].get("card", {}).get("schema") != "2.0"
+                        or manifest.get("chat_id") != os.environ.get("FEISHU_HOME_CHANNEL", "").strip()
+                        or manifest.get("thread_id") != os.environ.get("FEISHU_HOME_CHANNEL_THREAD_ID", "").strip()):
+                    raise RuntimeError("prepared preview date, target, or single-card state is invalid")
+            else:
+                manifest = prepare(root, preview or sample)
+            if sample:
+                for entry in manifest["cards"]:
+                    entry["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, entry["uuid"] + ":sample"))
             if not preview:
                 atomic_json(path, manifest)
-        output_dir = root / ("previews" if preview else "outputs")
+        output_dir = root / ("previews" if preview else "samples" if sample else "outputs")
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / f"{today}.md"
         output.write_text(manifest["markdown"], encoding="utf-8")
+        if preview:
+            atomic_json(output.with_suffix(".json"), manifest)
         print(f"Digest output: {output}")
         if preview:
             print("Preview OK: Chinese summaries and source links validated; no messages sent, no dedupe state changed")
@@ -232,13 +256,15 @@ def main() -> int:
     parser.add_argument("--env-file", type=Path, default=Path.home() / ".config/daily-ai-digest/env")
     parser.add_argument("--state-dir", type=Path, default=Path.home() / ".local/state/daily-ai-digest")
     parser.add_argument("--preview", action="store_true", help="Generate and validate without sending or marking seen")
+    parser.add_argument("--sample", action="store_true", help="Send one combined sample today, with a separate idempotent receipt")
+    parser.add_argument("--sample-from-preview", type=Path, help="With --sample, send this inspected same-day preview without regenerating")
     args = parser.parse_args()
     os.umask(0o077)
     digest.load_dotenv(args.env_file.expanduser())
     os.environ["TZ"] = "Asia/Shanghai"
     time.tzset()
     try:
-        return run(args.state_dir.expanduser(), args.preview)
+        return run(args.state_dir.expanduser(), args.preview, args.sample, args.sample_from_preview)
     except Exception as exc:
         print(f"Daily digest failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         print(f"ALERT: daily digest failed: {type(exc).__name__}: {exc}")

@@ -145,7 +145,7 @@ def remix(items: list[digest.DigestItem], meta: dict, limit: int, date: str | No
 
 
 def prepare(root: Path, preview: bool) -> dict:
-    limit = min(max(int(os.environ.get("DAILY_AI_SECTION_LIMIT", "5")), 1), 5)
+    limit = min(max(int(os.environ.get("DAILY_AI_TOTAL_LIMIT", "12")), 1), 15)
     now = dt.datetime.now(combined.TZ)
     today = now.date().isoformat()
     items, meta = digest.collect_builders_digest(
@@ -157,7 +157,9 @@ def prepare(root: Path, preview: bool) -> dict:
     source_items = builder_news + faiyi + aihot
     candidates, exact_duplicates = combined.exact_dedupe(source_items)
     metadata = {"builders": meta, "faiyi": faiyi_meta, "aihot": aihot_meta,
-                "collected_at": now.isoformat(timespec="seconds")}
+                "collected_at": now.isoformat(timespec="seconds"),
+                "selection_policy": {"total_limit": limit, "quality_weights": combined.QUALITY_WEIGHTS,
+                                     "minimum_quality_score": combined.MIN_QUALITY_SCORE}}
     atomic_json(root / "inputs" / f"{today}.combined.json", {
         "metadata": metadata, "candidates": [asdict(item) for item in candidates], "exact_duplicates": exact_duplicates,
     })

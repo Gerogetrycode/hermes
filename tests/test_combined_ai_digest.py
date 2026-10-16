@@ -21,6 +21,11 @@ def news(id="b01", section="builders", url="https://example.com/release"):
     return combined.NewsItem(id, section, "工具发布", url, url, "官方博客", "2026-10-16", SUMMARY)
 
 
+def ratings_payload(items):
+    return {"ratings": [{"id": item.id, "relevance": 26, "information": 26, "credibility": 22,
+                         "freshness": 12, "reason": "一手技术更新，包含具体机制。"} for item in items]}
+
+
 class CombinedDigestTest(unittest.TestCase):
     def test_faiyi_extracts_chinese_items_with_original_links_and_attribution(self):
         payload = [{"date": "2026-10-16T07:00:00", "link": "https://faiyi.com/?p=1", "content": {"rendered": (
@@ -109,7 +114,7 @@ class CombinedDigestTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no concrete AI"):
             combined.validate_plan(plan, [news()], 5)
 
-    def test_final_retry_caps_each_section_instead_of_losing_the_whole_card(self):
+    def test_final_retry_caps_intermediate_pool_at_the_entire_card_budget(self):
         items = [news(f"b{index:02}", url=f"https://example.com/{index}") for index in range(1, 7)]
         plan = {"keep": [{"id": item.id, "title": "更新", "summary": SUMMARY} for item in items], "duplicates": []}
         with self.assertRaisesRegex(RuntimeError, "limit"):
@@ -143,11 +148,12 @@ class CombinedDigestTest(unittest.TestCase):
         def response(content):
             return json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": content}}]}).encode()
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "not-public-test-secret"}), patch.object(
-            runner.digest, "open_with_retries", side_effect=[response("not json"), response("```json\n" + json.dumps(valid) + "\n```")]
+            runner.digest, "open_with_retries", side_effect=[response(json.dumps(ratings_payload([news()]))),
+                response("not json"), response("```json\n" + json.dumps(valid) + "\n```")]
         ) as request:
             rows, _ = combined.compose([news()])
             self.assertEqual(rows[0]["id"], "b01")
-            self.assertEqual(request.call_count, 2)
+            self.assertEqual(request.call_count, 3)
             body = json.loads(request.call_args.args[0].data)
             self.assertNotIn("not-public-test-secret", json.dumps(body))
             self.assertNotIn("tools", body)
@@ -164,15 +170,71 @@ class CombinedDigestTest(unittest.TestCase):
                 "shared_subject": "ExampleTool", "evidence": {"earlier": SUMMARY[:30], "later": SUMMARY[:30]}}]},
             {"keep": [keep("a01")], "duplicates": []},
         ]
-        responses = [json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(plan)}}]}).encode() for plan in plans]
+        responses = [json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(plan)}}]}).encode()
+                     for plan in [ratings_payload(items)] + plans]
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test"}), patch.object(runner.digest, "open_with_retries", side_effect=responses) as request:
             selected, removed = combined.compose(items)
         self.assertEqual([row["id"] for row in selected], ["b01", "a01"])
         self.assertEqual(removed[0]["id"], "f01")
-        last_body = json.loads(request.call_args.args[0].data)
+        last_body = json.loads(request.call_args_list[3].args[0].data)
         material = json.loads(last_body["messages"][1]["content"].rsplit("\n", 1)[-1])
         self.assertEqual([row["id"] for row in material["already_displayed"]], ["b01"])
         self.assertEqual([row["id"] for row in material["current"]], ["a01"])
+
+    def test_compose_allows_more_than_five_from_one_source(self):
+        items = [news(f"a{index:02}", "aihot", f"https://example.com/{index}") for index in range(6)]
+        plans = [ratings_payload(items), {"keep": [{"id": item.id, "title": "工具更新", "summary": SUMMARY} for item in items], "duplicates": []}]
+        responses = [json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(plan)}}]}).encode() for plan in plans]
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test"}), patch.object(runner.digest, "open_with_retries", side_effect=responses):
+            selected, _ = combined.compose(items, 12)
+        self.assertEqual(len(selected), 6)
+        self.assertTrue(all(row["section"] == "aihot" for row in selected))
+
+    def test_truncated_source_response_retries_compactly_and_remains_in_audit(self):
+        valid = {"keep": [{"id": "b01", "title": "工具更新", "summary": SUMMARY}], "duplicates": []}
+        def response(content, finish="stop"):
+            return json.dumps({"choices": [{"finish_reason": finish, "message": {"content": content}}]}).encode()
+        responses = [response(json.dumps(ratings_payload([news()]))), response("{incomplete", "length"), response(json.dumps(valid))]
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test"}), \
+             patch.object(runner.digest, "open_with_retries", side_effect=responses) as request:
+            audit = Path(directory) / "audit.json"
+            selected, _ = combined.compose([news()], audit_path=audit)
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(json.loads(audit.read_text())[1]["finish_reason"], "length")
+            self.assertIn("上一份输出被截断", json.loads(request.call_args.args[0].data)["messages"][-1]["content"])
+
+    def test_global_budget_can_all_go_to_one_source_and_exceed_five_items(self):
+        items = [news(f"a{index:02}", "aihot", f"https://example.com/{index}") for index in range(9)]
+        items.append(news("b01", "builders", "https://example.com/b"))
+        ratings = combined.validate_ratings(ratings_payload(items), items)
+        ratings["b01"].update({"total": 70, "information": 15})
+        rows = [{**vars(item), "summary": SUMMARY} for item in items]
+        selected = combined.apply_global_budget(rows, ratings, 8)
+        self.assertEqual(len(selected), 8)
+        self.assertTrue(all(row["section"] == "aihot" for row in selected))
+
+    def test_quality_order_overrides_feed_order_and_omits_low_quality_without_padding(self):
+        items = [news("b01"), news("a01", "aihot", "https://example.com/a"), news("f01", "faiyi", "https://example.com/f")]
+        ratings = combined.validate_ratings(ratings_payload(items), items)
+        ratings["b01"]["total"] = 64
+        ratings["a01"].update({"total": 90, "credibility": 25})
+        ratings["f01"]["total"] = 80
+        rows = [{**vars(item), "summary": SUMMARY} for item in items]
+        selected = combined.apply_global_budget(rows, ratings, 12)
+        self.assertEqual([row["id"] for row in selected], ["a01", "f01"])
+        self.assertEqual(len(selected), 2)
+        markdown, _ = combined.render(selected, "2026-10-16", 0, {})
+        self.assertLess(markdown.index("一 · Builders"), markdown.index("二 · 理想栈"))
+        self.assertLess(markdown.index("二 · 理想栈"), markdown.index("三 · AIHOT"))
+
+    def test_ratings_must_cover_every_candidate_with_valid_weights(self):
+        items = [news(), news("a01", "aihot", "https://example.com/a")]
+        with self.assertRaisesRegex(RuntimeError, "every candidate"):
+            combined.validate_ratings(ratings_payload(items[:1]), items)
+        invalid = ratings_payload(items)
+        invalid["ratings"][0]["credibility"] = 26
+        with self.assertRaisesRegex(RuntimeError, "bounded integers"):
+            combined.validate_ratings(invalid, items)
 
     def test_prepare_produces_one_card_from_all_three_sources(self):
         builder = runner.digest.DigestItem("更新", "https://example.com/b", "X / author", dt.date.today().isoformat(), SUMMARY, 1)

@@ -159,7 +159,8 @@ def prepare(root: Path, preview: bool) -> dict:
     metadata = {"builders": meta, "faiyi": faiyi_meta, "aihot": aihot_meta,
                 "collected_at": now.isoformat(timespec="seconds"),
                 "selection_policy": {"total_limit": limit, "quality_weights": combined.QUALITY_WEIGHTS,
-                                     "minimum_quality_score": combined.MIN_QUALITY_SCORE}}
+                                     "minimum_quality_score": combined.MIN_QUALITY_SCORE,
+                                     "version": combined.SELECTION_POLICY_VERSION}}
     atomic_json(root / "inputs" / f"{today}.combined.json", {
         "metadata": metadata, "candidates": [asdict(item) for item in candidates], "exact_duplicates": exact_duplicates,
     })

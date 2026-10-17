@@ -22,7 +22,7 @@ def news(id="b01", section="builders", url="https://example.com/release"):
 
 
 def ratings_payload(items):
-    return {"ratings": [{"id": item.id, "relevance": 26, "information": 26, "credibility": 22,
+    return {"ratings": [{"id": item.id, "content_type": "news", "relevance": 26, "information": 26, "credibility": 22,
                          "freshness": 12, "reason": "一手技术更新，包含具体机制。"} for item in items]}
 
 
@@ -130,8 +130,12 @@ class CombinedDigestTest(unittest.TestCase):
         rows[-1]["original_url"] = "https://example.com/original"
         markdown, card = combined.render(rows, "2026-10-16", 1, {})
         self.assertEqual(card["schema"], "2.0")
-        self.assertEqual(len(card["body"]["elements"]), 4)
-        self.assertEqual([element["tag"] for element in card["body"]["elements"]][1:], ["column_set"] * 3)
+        self.assertEqual(len(card["body"]["elements"]), 3)
+        self.assertEqual([element["tag"] for element in card["body"]["elements"]], ["column_set"] * 3)
+        self.assertNotIn("三路精选", json.dumps(card, ensure_ascii=False))
+        self.assertNotIn("同一事件仅展示一次", json.dumps(card, ensure_ascii=False))
+        self.assertNotIn("分钟", json.dumps(card, ensure_ascii=False))
+        self.assertNotIn("去重 1 条", markdown)
         self.assertIn("二 · 理想栈", markdown)
         self.assertIn("没有新增入选内容", markdown)
         self.assertIn("AIHOT /", json.dumps(card, ensure_ascii=False))
@@ -235,6 +239,110 @@ class CombinedDigestTest(unittest.TestCase):
         invalid["ratings"][0]["credibility"] = 26
         with self.assertRaisesRegex(RuntimeError, "bounded integers"):
             combined.validate_ratings(invalid, items)
+
+    def test_content_type_is_audited_and_short_insight_can_outrank_news(self):
+        items = [news(), news("a01", "aihot", "https://example.com/a")]
+        payload = ratings_payload(items)
+        payload["ratings"][0].update(content_type="insight", information=29)
+        ratings = combined.validate_ratings(payload, items)
+        rows = [{**vars(item), "summary": SUMMARY} for item in items]
+        selected = combined.apply_global_budget(rows, ratings, 1)
+        self.assertEqual(selected[0]["id"], "b01")
+        self.assertEqual(selected[0]["quality"]["content_type"], "insight")
+        payload["ratings"][0]["content_type"] = "famous-person"
+        with self.assertRaisesRegex(RuntimeError, "content_type"):
+            combined.validate_ratings(payload, items)
+
+    def test_quality_prompt_distinguishes_insight_from_information_volume(self):
+        response = json.dumps({"choices": [{"finish_reason": "stop", "message": {
+            "content": json.dumps(ratings_payload([news()]))}}]}).encode()
+        with patch.object(runner.digest, "open_with_retries", return_value=response) as request:
+            combined.rate_candidates([news()], "test", [], None)
+        body = json.loads(request.call_args.args[0].data)
+        self.assertEqual(body["temperature"], 0)
+        prompt = body["messages"][1]["content"]
+        for rule in ("认知增量而非篇幅", "不因文字短扣分", "当事人经验", "不因作者名气", "不得替作者补", "不给任何信源保留名额"):
+            self.assertIn(rule, prompt)
+        self.assertIn("不因缺少独立验证自动降至低分", prompt)
+        self.assertIn("各维度独立打分", prompt)
+
+    def test_short_builder_insight_is_not_padded_to_old_summary_length(self):
+        summary = "作者认为智能体提速后，验证代码将成为团队的新瓶颈。"
+        self.assertLess(len(summary), 35)
+        rows, _ = combined.validate_plan({"keep": [{"id": "b01", "title": "验证成为瓶颈", "summary": summary}],
+                                           "duplicates": []}, [news()], 12)
+        self.assertEqual(rows[0]["summary"], summary)
+
+    def test_builder_job_titles_must_come_from_supplied_source(self):
+        item = news()
+        summary = "Box CEO Aaron Levie认为智能体提速后，验证代码将成为团队的新瓶颈。"
+        plan = {"keep": [{"id": "b01", "title": "验证成为瓶颈", "summary": summary}], "duplicates": []}
+        with self.assertRaisesRegex(RuntimeError, "job title"):
+            combined.validate_plan(plan, [item], 12)
+        item.text += " Aaron Levie, CEO: verification is the bottleneck."
+        rows, _ = combined.validate_plan(plan, [item], 12)
+        self.assertEqual(rows[0]["summary"], summary)
+
+    def test_duplicate_viewpoint_is_attached_once_with_immutable_source_and_link(self):
+        items = [news(), news("f01", "faiyi", "https://example.com/opinion")]
+        for item in items:
+            item.title = "ExampleTool工具发布"
+        items[1].source = "作者甲"
+        items[1].text += "作者认为，智能体编写代码的速度增长后，验证代码才是新的瓶颈。"
+        perspective = {"summary": "作者认为智能体提高编写速度后，验证代码成为新的瓶颈。",
+                       "quote": "智能体编写代码的速度增长后，验证代码才是新的瓶颈"}
+        duplicate = {"id": "f01", "of": "b01", "reason": "same launch with a distinct viewpoint", "shared_subject": "ExampleTool",
+                     "evidence": {"earlier": SUMMARY[:30], "later": SUMMARY[:30]}, "perspective": perspective}
+        rows, duplicates = combined.validate_plan({"keep": [{"id": "b01", "title": "工具更新", "summary": SUMMARY}],
+                                                     "duplicates": [duplicate]}, items, 12)
+        ratings = combined.validate_ratings(ratings_payload(items), items)
+        rows = combined.attach_perspectives(rows, duplicates, {item.id: item for item in items}, ratings)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["perspectives"][0]["source"], "作者甲")
+        self.assertEqual(rows[0]["perspectives"][0]["url"], items[1].url)
+        markdown, card = combined.render(rows, "2026-10-17", 1, {})
+        self.assertIn("补充视角 · [作者甲", markdown)
+        self.assertIn(items[1].url, json.dumps(card))
+        self.assertEqual(combined.attach_perspectives([], duplicates, {item.id: item for item in items}, ratings), [])
+        duplicate["perspective"]["quote"] = "这段证据从未出现在原始正文材料中，不能被接受。"
+        with self.assertRaisesRegex(RuntimeError, "verbatim"):
+            combined.validate_plan({"keep": [{"id": "b01", "title": "工具更新", "summary": SUMMARY}],
+                                    "duplicates": [duplicate]}, items, 12)
+        with self.assertRaisesRegex(RuntimeError, "verbatim"):
+            combined.validate_plan({"keep": [{"id": "b01", "title": "工具更新", "summary": SUMMARY}],
+                                    "duplicates": [duplicate]}, items, 12, partial=True)
+
+    def test_perspective_survives_later_section_compose_without_extra_event_slot(self):
+        items = [news(), news("f01", "faiyi", "https://example.com/f"), news("a01", "aihot", "https://example.com/a")]
+        for item in items:
+            item.title = "ExampleTool工具发布"
+        items[1].text += "作者认为智能体提速后，验证代码将成为团队的新瓶颈。"
+        perspective = {"summary": "作者认为智能体提速后，验证代码将成为团队的新瓶颈。",
+                       "quote": "作者认为智能体提速后，验证代码将成为团队的新瓶颈"}
+        def keep(id):
+            return {"id": id, "title": "工具更新", "summary": SUMMARY}
+        plans = [ratings_payload(items), {"keep": [keep("b01")], "duplicates": []},
+                 {"keep": [], "duplicates": [{"id": "f01", "of": "b01", "reason": "same launch",
+                    "shared_subject": "ExampleTool", "evidence": {"earlier": SUMMARY[:30], "later": SUMMARY[:30]},
+                    "perspective": perspective}]}, {"keep": [keep("a01")], "duplicates": []}]
+        responses = [json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(plan)}}]}).encode()
+                     for plan in plans]
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test"}), patch.object(runner.digest, "open_with_retries", side_effect=responses):
+            selected, duplicates = combined.compose(items)
+        self.assertEqual([row["id"] for row in selected], ["b01", "a01"])
+        self.assertEqual(selected[0]["perspectives"][0]["id"], "f01")
+        self.assertEqual(duplicates[0]["perspective"], perspective)
+
+    def test_only_two_highest_quality_viewpoints_are_displayed_per_event(self):
+        items = [news()] + [news(f"f{index:02}", "faiyi", f"https://example.com/{index}") for index in range(1, 4)]
+        ratings = combined.validate_ratings(ratings_payload(items), items)
+        for id, total in (("f01", 70), ("f02", 90), ("f03", 80)):
+            ratings[id]["total"] = total
+        duplicates = [{"id": item.id, "of": "b01", "perspective": {"summary": SUMMARY, "quote": SUMMARY[:30]}}
+                      for item in items[1:]]
+        rows = combined.attach_perspectives([{**vars(items[0]), "summary": SUMMARY}], duplicates,
+                                           {item.id: item for item in items}, ratings)
+        self.assertEqual([row["id"] for row in rows[0]["perspectives"]], ["f02", "f03"])
 
     def test_prepare_produces_one_card_from_all_three_sources(self):
         builder = runner.digest.DigestItem("更新", "https://example.com/b", "X / author", dt.date.today().isoformat(), SUMMARY, 1)

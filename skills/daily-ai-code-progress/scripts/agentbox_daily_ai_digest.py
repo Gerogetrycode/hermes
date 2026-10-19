@@ -149,7 +149,7 @@ def prepare(root: Path, preview: bool) -> dict:
     now = dt.datetime.now(combined.TZ)
     today = now.date().isoformat()
     items, meta = digest.collect_builders_digest(
-        24, root / "seen.json", include_seen=preview, cache_dir=root / "cache",
+        None, root / "seen.json", include_seen=preview, cache_dir=root / "cache",
     )
     builder_news = combined.builders_items(items, now.date())
     faiyi, faiyi_meta = combined.collect_faiyi(now.date())

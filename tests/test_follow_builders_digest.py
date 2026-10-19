@@ -4,6 +4,9 @@ import importlib.util
 import datetime as dt
 import sys
 import unittest
+import tempfile
+import json
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -120,7 +123,7 @@ class ChineseDigestQualityTest(unittest.TestCase):
         card = digest.build_card("标题", "正文", "blue", 100)
         self.assertIs(card["config"]["update_multi"], True)
 
-    def test_x_candidates_need_enough_source_detail_to_summarize(self):
+    def test_short_posts_reach_semantic_review_without_keyword_or_engagement_gates(self):
         feed = {"x": [{
             "name": "Builder", "handle": "builder",
             "tweets": [{
@@ -128,7 +131,39 @@ class ChineseDigestQualityTest(unittest.TestCase):
                 "url": "https://x.com/builder/status/1", "createdAt": "2026-10-10T00:00:00Z",
             }],
         }]}
-        self.assertEqual(digest.collect_x_items(feed), [])
+        self.assertEqual(len(digest.collect_x_items(feed)), 1)
+        feed["x"][0]["tweets"][0].update(text="Verify outcomes, not activity.", likes=0, retweets=0)
+        self.assertEqual(len(digest.collect_x_items(feed)), 1)
+
+    def test_each_post_keeps_its_own_link_and_source_bio(self):
+        feed = {"x": [{"name": "Builder", "bio": "CTO of Example", "tweets": [
+            {"text": "Brief first insight.", "url": "https://x.com/a/status/1", "createdAt": "2026-10-19"},
+            {"text": "Another distinct idea.", "url": "https://x.com/a/status/2", "createdAt": "2026-10-19"}]}]}
+        items = digest.collect_x_items(feed)
+        self.assertEqual([item.url for item in items], ["https://x.com/a/status/1", "https://x.com/a/status/2"])
+        self.assertNotIn("Another distinct idea", items[0].raw_content)
+        self.assertIn("CTO of Example", items[0].raw_content)
+        self.assertTrue(all(item.score == 0 for item in items))
+
+    def test_blog_and_podcast_do_not_require_topic_keywords(self):
+        today = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date().isoformat()
+        items = digest.collect_podcast_items({"podcasts": [{"title": "A useful perspective", "publishedAt": today,
+            "url": "https://example.com/podcast", "transcript": "Verify outcomes, not activity."}]})
+        self.assertEqual(len(items), 1)
+        self.assertEqual(len(digest.collect_blog_items({"blogs": [{"title": "A useful perspective",
+            "url": "https://example.com/blog", "summary": "Verify outcomes, not activity."}]})), 1)
+
+    def test_production_pool_is_uncapped_and_old_sent_urls_stay_excluded(self):
+        today = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date().isoformat()
+        feed = {"x": [{"name": f"Person {i}", "tweets": [{"text": "Short perspective.",
+            "url": f"https://x.com/a/status/{i}", "createdAt": today}]} for i in range(30)]}
+        with tempfile.TemporaryDirectory() as directory, patch.object(digest, "fetch_feed_json",
+                side_effect=lambda url, name, cache: (feed if name == "feed-x" else {}, "cache")):
+            state = Path(directory) / "seen.json"
+            state.write_text(json.dumps({"seen": {"legacy-group-fingerprint": {"url": "https://x.com/a/status/0"}}}))
+            items, _ = digest.collect_builders_digest(None, state, False, Path(directory))
+        self.assertEqual(len(items), 29)
+        self.assertNotIn("https://x.com/a/status/0", [item.url for item in items])
 
 
 if __name__ == "__main__":

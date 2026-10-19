@@ -438,43 +438,24 @@ def collect_x_items(feed: dict) -> list[DigestItem]:
         if not isinstance(account, dict):
             continue
         tweets = [tweet for tweet in account.get("tweets", []) or [] if isinstance(tweet, dict)]
-        scored: list[tuple[int, dict]] = []
         for tweet in tweets:
             text = clean_text(str(tweet.get("text", "")))
-            if not text:
+            url = str(tweet.get("url") or "")
+            if not text or not url:
                 continue
-            if not has_core_ai_coding_signal(text):
-                continue
-            score = signal_score(text)
-            score += min(int(tweet.get("likes") or 0), 500) // 8
-            score += min(int(tweet.get("retweets") or 0), 100) // 2
-            if score >= 35:
-                scored.append((score, tweet))
-        if not scored:
-            continue
-        scored.sort(key=lambda pair: pair[0], reverse=True)
-        top = [tweet for _, tweet in scored[:3]]
-        combined = " ".join(str(tweet.get("text", "")) for tweet in top)
-        if len(clean_text(combined)) < 80:
-            continue
-        topic = classify_topic(combined)
-        name = str(account.get("name") or account.get("handle") or "AI builder")
-        handle = str(account.get("handle") or "").strip()
-        published = parse_date(str(top[0].get("createdAt") or ""))
-        url = str(top[0].get("url") or (f"https://x.com/{handle}" if handle else ""))
-        snippets = "；".join(short_text(str(tweet.get("text", "")), 120) for tweet in top[:2])
-        summary = f"{name} 最近围绕「{topic}」发布了相关动态。核心信息：{snippets}。"
-        item = DigestItem(
-            title=f"{name}: {topic}",
-            url=url,
-            source=f"X / {name}",
-            published=published,
-            summary=summary,
-            score=scored[0][0] + 20,
-            raw_content="\n\n".join(clean_text(str(tweet.get("text", ""))) for tweet in top),
-        )
-        item.fingerprint = fingerprint([item.source, item.url, item.title])
-        items.append(item)
+            # Keep each source post and its own link. Value is judged downstream,
+            # not by keywords, engagement or text length in this adapter.
+            topic = classify_topic(text)  # Display hint only, never an eligibility gate.
+            name = str(account.get("name") or account.get("handle") or "AI builder")
+            bio = clean_text(str(account.get("bio") or ""))
+            item = DigestItem(
+                title=f"{name}: {topic}", url=url, source=f"X / {name}",
+                published=parse_date(str(tweet.get("createdAt") or "")),
+                summary=short_text(text, 320), score=0,
+                raw_content=(f"作者简介（feed）：{bio}\n\n" if bio else "") + text,
+            )
+            item.fingerprint = fingerprint([item.source, item.url, item.title])
+            items.append(item)
     return items
 
 
@@ -504,8 +485,7 @@ def collect_podcast_items(feed: dict) -> list[DigestItem]:
         title = str(podcast.get("title") or podcast.get("name") or "Podcast")
         transcript = str(podcast.get("transcript") or "")
         haystack = f"{title}\n{transcript}"
-        score = signal_score(haystack) + 45
-        if score < 60:
+        if not transcript.strip():
             continue
         topic = classify_topic(haystack)
         excerpt = transcript_excerpt(transcript, AI_CODING_TERMS)
@@ -520,7 +500,7 @@ def collect_podcast_items(feed: dict) -> list[DigestItem]:
             source=f"Podcast / {source_name}",
             published=published,
             summary=summary,
-            score=score,
+            score=0,
             raw_content=excerpt,
         )
         item.fingerprint = fingerprint([item.source, item.url, item.title])
@@ -536,8 +516,7 @@ def collect_blog_items(feed: dict) -> list[DigestItem]:
         title = str(blog.get("title") or blog.get("name") or "Blog post")
         body = str(blog.get("summary") or blog.get("content") or blog.get("text") or "")
         haystack = f"{title}\n{body}"
-        score = signal_score(haystack) + 35
-        if score < 60:
+        if not body.strip():
             continue
         topic = classify_topic(haystack)
         summary = (
@@ -549,7 +528,7 @@ def collect_blog_items(feed: dict) -> list[DigestItem]:
             source=str(blog.get("source") or blog.get("name") or "Blog"),
             published=parse_date(str(blog.get("publishedAt") or blog.get("date") or "")),
             summary=summary,
-            score=score,
+            score=0,
             raw_content=short_text(body or title, 1200),
         )
         item.fingerprint = fingerprint([item.source, item.url, item.title])
@@ -557,7 +536,7 @@ def collect_blog_items(feed: dict) -> list[DigestItem]:
     return items
 
 
-def collect_builders_digest(limit: int, state_path: Path, include_seen: bool, cache_dir: Path) -> tuple[list[DigestItem], dict]:
+def collect_builders_digest(limit: int | None, state_path: Path, include_seen: bool, cache_dir: Path) -> tuple[list[DigestItem], dict]:
     feed_x, x_status = fetch_feed_json(os.environ.get("FOLLOW_BUILDERS_FEED_X_URL", FEED_X_URL), "feed-x", cache_dir)
     feed_podcasts, podcasts_status = fetch_feed_json(
         os.environ.get("FOLLOW_BUILDERS_FEED_PODCASTS_URL", FEED_PODCASTS_URL),
@@ -577,27 +556,13 @@ def collect_builders_digest(limit: int, state_path: Path, include_seen: bool, ca
     state = load_state(state_path)
     seen = state.setdefault("seen", {})
     items = collect_podcast_items(feeds["podcasts"]) + collect_blog_items(feeds["blogs"]) + collect_x_items(feeds["x"])
-    candidates = [item for item in items if include_seen or item.fingerprint not in seen]
-    candidates.sort(key=lambda item: (item.score, item.published), reverse=True)
-
-    selected: list[DigestItem] = []
-    source_families: set[str] = set()
-    for item in candidates:
-        family = item.source.split("/", 1)[0].strip()
-        if family in source_families and len(source_families) < 3:
-            continue
-        selected.append(item)
-        source_families.add(family)
-        if len(selected) >= limit:
-            break
-    if len(selected) < limit:
-        selected_ids = {item.fingerprint for item in selected}
-        for item in candidates:
-            if item.fingerprint not in selected_ids:
-                selected.append(item)
-                selected_ids.add(item.fingerprint)
-            if len(selected) >= limit:
-                break
+    # URL matching preserves sent-state compatibility when old grouped-post
+    # titles/fingerprints differ from the new per-post adapter.
+    sent_urls = {row.get("url") for row in seen.values() if isinstance(row, dict)}
+    candidates = [item for item in items if include_seen or (
+        item.fingerprint not in seen and item.url not in sent_urls)]
+    candidates.sort(key=lambda item: item.published, reverse=True)
+    selected = candidates if limit is None else candidates[:limit]
 
     meta = {
         "feedGeneratedAt": feeds["x"].get("generatedAt") or feeds["podcasts"].get("generatedAt") or feeds["blogs"].get("generatedAt"),
@@ -615,7 +580,8 @@ def collect_builders_digest(limit: int, state_path: Path, include_seen: bool, ca
             if isinstance(feed.get("errors"), list) and feed.get("errors")
         },
     }
-    return selected[:limit], meta
+    meta["candidate_policy"] = "source-only-v3"
+    return selected, meta
 
 
 def mark_sent(items: list[DigestItem], state_path: Path) -> None:

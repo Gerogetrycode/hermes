@@ -94,7 +94,7 @@ class CombinedDigestTest(unittest.TestCase):
     def test_invalid_item_is_omitted_on_retry_without_generic_fallback(self):
         items = [news(), news("f01", "faiyi", "https://example.com/other")]
         plan = {"keep": [{"id": "b01", "title": "更新", "summary": SUMMARY},
-                         {"id": "f01", "title": "套话", "summary": "对工程团队而言，重点是持续观察工具链成熟度。"}], "duplicates": []}
+                         {"id": "f01", "title": "无效摘要", "summary": "This is a wholly English summary without Chinese narration."}], "duplicates": []}
         with self.assertRaises(RuntimeError):
             combined.validate_plan(plan, items, 5)
         rows, _ = combined.validate_plan(plan, items, 5, partial=True)
@@ -108,11 +108,39 @@ class CombinedDigestTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runner.digest.validate_chinese_digest("- 摘要：" + summary)
 
-    def test_builder_politics_or_generic_startup_commentary_is_not_a_daily_ai_item(self):
+    def test_format_validator_does_not_repeat_the_value_review(self):
         summary = "作者呼吁对当地提案投反对票，认为相关学者不了解创业公司的处境，也没有考虑政策对创新生态的长期影响。"
         plan = {"keep": [{"id": "b01", "title": "投票观点", "summary": summary}], "duplicates": []}
-        with self.assertRaisesRegex(RuntimeError, "no concrete AI"):
-            combined.validate_plan(plan, [news()], 5)
+        rows, _ = combined.validate_plan(plan, [news()], 5)
+        ratings = combined.validate_ratings(ratings_payload([news()]), [news()])
+        ratings["b01"]["total"] = 39
+        self.assertEqual(combined.apply_global_budget(rows, ratings, 12), [])
+
+    def test_oct19_peter_yang_summary_passes_without_repeating_ai_keywords(self):
+        item = news()
+        item.text = "Audit apps and agents connected to Google. The Claude Code app is faster now."
+        summary = "Peter Yang给出审计Google应用连接的提示词：逐项检查所有连接类别，区分基础登录与Gmail、Drive、Calendar等数据权限，标记宽泛权限、陌生提供方和重复项，经用户确认后再断开。"
+        rows, _ = combined.validate_plan({"keep": [{"id": "b01", "title": "权限审计实践", "summary": summary}],
+                                           "duplicates": []}, [item], 12)
+        self.assertEqual(len(rows), 1)
+
+    def test_oct19_deepseek_short_chinese_news_keeps_source_model_names(self):
+        item = news("a01", "aihot", "https://example.com/arena")
+        item.title = "DeepSeek-V4.1-Flash-20261017 登顶 Code Arena: WebDev 开源模型榜首"
+        item.text = "Arena 宣布 DeepSeek-V4.1-Flash-20261017 (Max) 成为 Code Arena: WebDev 榜单第一开源模型，超过 Kimi K3 (Max)，成本低约 10 倍。"
+        summary = "Arena宣布，DeepSeek-V4.1-Flash-20261017 (Max)成为Code Arena: WebDev榜单第一开源模型，超过Kimi K3 (Max)，成本低约10倍。"
+        combined.validate_source_chinese(summary, item)
+        with self.assertRaises(RuntimeError):
+            runner.digest.validate_chinese_digest("- 摘要：" + summary, min_chinese_chars=20)
+
+    def test_language_check_does_not_exempt_unknown_names_or_copied_english_prose(self):
+        with self.assertRaisesRegex(RuntimeError, "not Chinese-first"):
+            combined.validate_source_chinese("更新：UnknownProduct UnrelatedCompany ImaginaryLongModelName AnnouncedSomething.", news())
+        text = "This is a complete English sentence that contains enough ordinary English words to be copied as a long passage without any meaningful Chinese narration at all."
+        item = news()
+        item.text = text
+        with self.assertRaisesRegex(RuntimeError, "long English passage"):
+            combined.validate_source_chinese("更新：" + text, item)
 
     def test_final_retry_caps_intermediate_pool_at_the_entire_card_budget(self):
         items = [news(f"b{index:02}", url=f"https://example.com/{index}") for index in range(1, 7)]
